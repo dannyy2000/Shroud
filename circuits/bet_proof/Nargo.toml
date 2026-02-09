@@ -1,0 +1,7 @@
+[package]
+name = "bet_proof"
+type = "bin"
+authors = ["Shroud Team"]
+compiler_version = ">=1.0.0-beta.3"
+
+[dependencies]
