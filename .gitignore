@@ -1,0 +1,29 @@
+# Cairo / Scarb
+contracts/target/
+*.sierra.json
+*.casm.json
+
+# Noir
+circuits/*/target/
+circuits/*/proofs/
+circuits/*/Prover.toml
+
+# Garaga
+garaga_output/
+*.vk
+*.proof
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+
+# System
+.DS_Store
+*.log
+.env
+node_modules/
+
+# IDE
+.vscode/
+.idea/
