@@ -106,6 +106,14 @@ pub trait IMarketFactory<TContractState> {
     fn get_deposit_pool(self: @TContractState) -> ContractAddress;
 }
 
+/// Garaga-generated ZK Honk verifier interface
+#[starknet::interface]
+pub trait IUltraKeccakZKHonkVerifier<TContractState> {
+    fn verify_ultra_keccak_zk_honk_proof(
+        self: @TContractState, full_proof_with_hints: Span<felt252>,
+    ) -> Result<Span<u256>, felt252>;
+}
+
 #[starknet::interface]
 pub trait IMarket<TContractState> {
     /// Place an anonymous bet.

@@ -9,14 +9,18 @@
 #[starknet::contract]
 pub mod Market {
     use core::poseidon::PoseidonTrait;
-    use core::hash::{HashStateTrait, HashStateExTrait};
+    use core::hash::HashStateTrait;
     use starknet::{
         ContractAddress, get_caller_address, get_block_timestamp, get_contract_address,
-        storage::{Map, StorageMapReadAccess, StorageMapWriteAccess},
+        storage::{
+            Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
+            StoragePointerWriteAccess,
+        },
     };
     use shroud::interfaces::{
-        IMarket, IDepositPoolDispatcher, IDepositPoolDispatcherTrait, MarketStatus, MarketConfig,
-        Outcome, ResolutionSource, PoolTier, Bet,
+        IMarket, IDepositPoolDispatcher, IDepositPoolDispatcherTrait,
+        IUltraKeccakZKHonkVerifierDispatcher, IUltraKeccakZKHonkVerifierDispatcherTrait,
+        MarketStatus, MarketConfig, Outcome, ResolutionSource, PoolTier, Bet,
     };
 
     // Dispute window: 48 hours after creator resolution
@@ -33,8 +37,12 @@ pub mod Market {
         // Deposit pool reference
         deposit_pool: ContractAddress,
 
-        // Garaga verifier contract address
-        verifier: ContractAddress,
+        // Garaga verifier contract addresses
+        membership_verifier: ContractAddress,
+        claim_verifier: ContractAddress,
+
+        // Market ID (needed for public input validation)
+        market_id: felt252,
 
         // Bets storage: commitment -> Bet
         bets: Map<felt252, Bet>,
@@ -99,7 +107,9 @@ pub mod Market {
         config: MarketConfig,
         question: ByteArray,
         deposit_pool: ContractAddress,
-        verifier: ContractAddress,
+        membership_verifier: ContractAddress,
+        claim_verifier: ContractAddress,
+        market_id: felt252,
         strk_token: ContractAddress,
     ) {
         self.config.write(config);
@@ -107,7 +117,9 @@ pub mod Market {
         self.status.write(MarketStatus::Open);
         self.resolved_outcome.write(Outcome::Pending);
         self.deposit_pool.write(deposit_pool);
-        self.verifier.write(verifier);
+        self.membership_verifier.write(membership_verifier);
+        self.claim_verifier.write(claim_verifier);
+        self.market_id.write(market_id);
         self.strk_token.write(strk_token);
         self.total_bets.write(0);
         self.total_revealed.write(0);
@@ -181,12 +193,12 @@ pub mod Market {
 
             // Verify the reveal matches the commitment
             // commitment = poseidon_hash(outcome_felt, nonce)
-            let outcome_felt = Self::_outcome_to_felt(outcome);
+            let outcome_felt = outcome_to_felt(outcome);
             let expected_commitment = PoseidonTrait::new()
                 .update(outcome_felt)
                 .update(nonce)
                 .finalize();
-            assert(expected_commitment == bet_commitment, 'Reveal does not match commitment');
+            assert(expected_commitment == bet_commitment, 'Reveal mismatch');
 
             // Update the bet
             bet.revealed = true;
@@ -401,31 +413,83 @@ pub mod Market {
             bet_commitment: felt252,
             nullifier: felt252,
         ) {
-            // In production: call Garaga verifier contract
-            // verify_ultra_keccak_zk_honk_proof(proof_with_hints)
-            //
-            // The proof verifies:
-            // - Prover knows (secret, nullifier_secret) such that
-            //   commitment = poseidon(secret, nullifier_secret) is in the Merkle tree
-            // - nullifier = poseidon(nullifier_secret, market_id)
-            // - bet_commitment is included as a public input
-            //
-            // For hackathon MVP: verify proof length is valid as placeholder
-            // TODO: Replace with actual Garaga verifier call
-            assert(zk_proof.len() > 0, 'Invalid proof');
+            // Call the Garaga membership verifier contract
+            let verifier = IUltraKeccakZKHonkVerifierDispatcher {
+                contract_address: self.membership_verifier.read(),
+            };
+
+            let result = verifier.verify_ultra_keccak_zk_honk_proof(zk_proof);
+            let public_inputs = match result {
+                Result::Ok(inputs) => inputs,
+                Result::Err(_) => { panic!("Membership proof verification failed"); },
+            };
+
+            // Validate public inputs match expected values
+            // Circuit public inputs order (from membership_proof/src/main.nr):
+            //   [0] merkle_root
+            //   [1] nullifier
+            //   [2] bet_commitment
+            //   [3] market_id
+            assert(public_inputs.len() >= 4, 'Invalid public inputs length');
+
+            // Verify merkle root matches current pool state
+            let pool = IDepositPoolDispatcher {
+                contract_address: self.deposit_pool.read(),
+            };
+            let config = self.config.read();
+            let expected_root: felt252 = pool.get_merkle_root(config.pool_tier);
+            let proof_root: felt252 = (*public_inputs.at(0)).try_into().expect('Invalid root');
+            assert(proof_root == expected_root, 'Merkle root mismatch');
+
+            // Verify nullifier matches
+            let proof_nullifier: felt252 = (*public_inputs.at(1)).try_into().expect('Invalid nullifier');
+            assert(proof_nullifier == nullifier, 'Nullifier mismatch');
+
+            // Verify bet commitment matches
+            let proof_commitment: felt252 = (*public_inputs.at(2)).try_into().expect('Invalid commitment');
+            assert(proof_commitment == bet_commitment, 'Bet commitment mismatch');
+
+            // Verify market ID matches
+            let proof_market_id: felt252 = (*public_inputs.at(3)).try_into().expect('Invalid market id');
+            assert(proof_market_id == self.market_id.read(), 'Market ID mismatch');
         }
 
         /// Verify ZK proof of bet ownership for anonymous claiming
         fn _verify_claim_proof(
             self: @ContractState, zk_proof: Span<felt252>, bet_commitment: felt252,
         ) {
-            // In production: call Garaga verifier contract
-            // Proves: caller knows the nonce used in bet_commitment = poseidon(outcome, nonce)
-            // without revealing any identity link
-            //
-            // For hackathon MVP: verify proof length as placeholder
-            // TODO: Replace with actual Garaga verifier call
-            assert(zk_proof.len() > 0, 'Invalid proof');
+            // Call the Garaga claim verifier contract
+            let verifier = IUltraKeccakZKHonkVerifierDispatcher {
+                contract_address: self.claim_verifier.read(),
+            };
+
+            let result = verifier.verify_ultra_keccak_zk_honk_proof(zk_proof);
+            let public_inputs = match result {
+                Result::Ok(inputs) => inputs,
+                Result::Err(_) => { panic!("Claim proof verification failed"); },
+            };
+
+            // Validate public inputs match expected values
+            // Circuit public inputs order (from claim_proof/src/main.nr):
+            //   [0] bet_commitment
+            //   [1] winning_outcome
+            //   [2] market_id
+            //   [3] nullifier
+            assert(public_inputs.len() >= 4, 'Invalid public inputs length');
+
+            // Verify bet commitment matches
+            let proof_commitment: felt252 = (*public_inputs.at(0)).try_into().expect('Invalid commitment');
+            assert(proof_commitment == bet_commitment, 'Bet commitment mismatch');
+
+            // Verify winning outcome matches the resolved outcome
+            let resolved = self.resolved_outcome.read();
+            let expected_outcome_felt = outcome_to_felt(resolved);
+            let proof_outcome: felt252 = (*public_inputs.at(1)).try_into().expect('Invalid outcome');
+            assert(proof_outcome == expected_outcome_felt, 'Outcome mismatch');
+
+            // Verify market ID matches
+            let proof_market_id: felt252 = (*public_inputs.at(2)).try_into().expect('Invalid market id');
+            assert(proof_market_id == self.market_id.read(), 'Market ID mismatch');
         }
 
         /// Calculate payout per winning bet
@@ -473,14 +537,11 @@ pub mod Market {
     }
 
     // -- Pure helpers --
-    #[generate_trait]
-    pub impl HelpersImpl of HelpersTrait {
-        fn _outcome_to_felt(outcome: Outcome) -> felt252 {
-            match outcome {
-                Outcome::Pending => 0,
-                Outcome::Yes => 1,
-                Outcome::No => 2,
-            }
+    fn outcome_to_felt(outcome: Outcome) -> felt252 {
+        match outcome {
+            Outcome::Pending => 0,
+            Outcome::Yes => 1,
+            Outcome::No => 2,
         }
     }
 }

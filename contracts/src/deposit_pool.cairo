@@ -8,10 +8,13 @@
 #[starknet::contract]
 pub mod DepositPool {
     use core::poseidon::PoseidonTrait;
-    use core::hash::{HashStateTrait, HashStateExTrait};
+    use core::hash::HashStateTrait;
     use starknet::{
         ContractAddress, get_caller_address, get_contract_address,
-        storage::{Map, StorageMapReadAccess, StorageMapWriteAccess},
+        storage::{
+            Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
+            StoragePointerWriteAccess,
+        },
     };
     use shroud::interfaces::{IDepositPool, PoolTier};
 
@@ -79,9 +82,9 @@ pub mod DepositPool {
 
         // Initialize Merkle roots with empty tree root for each tier
         let empty_root = self._compute_empty_root();
-        self.merkle_roots.write(Self::_tier_to_id(PoolTier::Small), empty_root);
-        self.merkle_roots.write(Self::_tier_to_id(PoolTier::Medium), empty_root);
-        self.merkle_roots.write(Self::_tier_to_id(PoolTier::Large), empty_root);
+        self.merkle_roots.write(tier_to_id(PoolTier::Small), empty_root);
+        self.merkle_roots.write(tier_to_id(PoolTier::Medium), empty_root);
+        self.merkle_roots.write(tier_to_id(PoolTier::Large), empty_root);
     }
 
     #[abi(embed_v0)]
@@ -90,11 +93,11 @@ pub mod DepositPool {
             // Validate commitment is non-zero
             assert(commitment != 0, 'Invalid commitment');
 
-            let tier_id = Self::_tier_to_id(tier);
+            let tier_id = tier_to_id(tier);
             let current_count = self.deposit_count.read(tier_id);
 
             // Check tree capacity
-            let max_leaves: u32 = Self::_pow2(TREE_DEPTH);
+            let max_leaves: u32 = pow2(TREE_DEPTH);
             assert(current_count < max_leaves, 'Pool is full');
 
             // Transfer STRK from caller to this contract
@@ -126,11 +129,11 @@ pub mod DepositPool {
         }
 
         fn get_merkle_root(self: @ContractState, tier: PoolTier) -> felt252 {
-            self.merkle_roots.read(Self::_tier_to_id(tier))
+            self.merkle_roots.read(tier_to_id(tier))
         }
 
         fn get_deposit_count(self: @ContractState, tier: PoolTier) -> u32 {
-            self.deposit_count.read(Self::_tier_to_id(tier))
+            self.deposit_count.read(tier_to_id(tier))
         }
 
         fn is_nullifier_used(self: @ContractState, nullifier: felt252) -> bool {
@@ -152,7 +155,7 @@ pub mod DepositPool {
         }
 
         fn get_leaf(self: @ContractState, tier: PoolTier, index: u32) -> felt252 {
-            self.leaves.read((Self::_tier_to_id(tier), index))
+            self.leaves.read((tier_to_id(tier), index))
         }
     }
 
@@ -220,7 +223,7 @@ pub mod DepositPool {
                 };
 
                 // Hash the pair to get parent
-                current_hash = Self::_hash_pair(left, right);
+                current_hash = hash_pair(left, right);
                 current_index = current_index / 2;
                 level += 1;
 
@@ -237,7 +240,7 @@ pub mod DepositPool {
             let mut current = 0; // Empty leaf = 0
             let mut level: u32 = 0;
             while level < TREE_DEPTH {
-                current = Self::_hash_pair(current, current);
+                current = hash_pair(current, current);
                 level += 1;
             };
             current
@@ -245,31 +248,25 @@ pub mod DepositPool {
     }
 
     // -- Pure helper functions --
-    #[generate_trait]
-    pub impl HelpersImpl of HelpersTrait {
-        /// Hash two nodes together using Poseidon
-        fn _hash_pair(left: felt252, right: felt252) -> felt252 {
-            PoseidonTrait::new().update(left).update(right).finalize()
-        }
+    fn hash_pair(left: felt252, right: felt252) -> felt252 {
+        PoseidonTrait::new().update(left).update(right).finalize()
+    }
 
-        /// Convert PoolTier to a felt252 identifier
-        fn _tier_to_id(tier: PoolTier) -> felt252 {
-            match tier {
-                PoolTier::Small => 1,
-                PoolTier::Medium => 2,
-                PoolTier::Large => 3,
-            }
+    fn tier_to_id(tier: PoolTier) -> felt252 {
+        match tier {
+            PoolTier::Small => 1,
+            PoolTier::Medium => 2,
+            PoolTier::Large => 3,
         }
+    }
 
-        /// Compute 2^exp
-        fn _pow2(exp: u32) -> u32 {
-            let mut result: u32 = 1;
-            let mut i: u32 = 0;
-            while i < exp {
-                result = result * 2;
-                i += 1;
-            };
-            result
-        }
+    fn pow2(exp: u32) -> u32 {
+        let mut result: u32 = 1;
+        let mut i: u32 = 0;
+        while i < exp {
+            result = result * 2;
+            i += 1;
+        };
+        result
     }
 }

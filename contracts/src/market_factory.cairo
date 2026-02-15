@@ -8,7 +8,10 @@
 pub mod MarketFactory {
     use starknet::{
         ContractAddress, get_caller_address, get_block_timestamp,
-        storage::{Map, StorageMapReadAccess, StorageMapWriteAccess},
+        storage::{
+            Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
+            StoragePointerWriteAccess,
+        },
     };
     use shroud::interfaces::{IMarketFactory, ResolutionSource, PoolTier};
 
@@ -77,7 +80,7 @@ pub mod MarketFactory {
 
             // Validate deadlines
             assert(bet_deadline > now, 'Bet deadline must be in future');
-            assert(reveal_deadline > bet_deadline, 'Reveal must be after bet deadline');
+            assert(reveal_deadline > bet_deadline, 'Reveal after bet deadline');
 
             // Validate oracle config
             if resolution_source == ResolutionSource::PragmaOracle {
@@ -90,7 +93,7 @@ pub mod MarketFactory {
             // For MVP: store market data in factory rather than deploying separate contracts.
             // In production, each market would be a separate deployed contract.
             let market_info = MarketInfo {
-                market_address: starknet::contract_address_const::<0>(), // MVP: not deployed separately
+                market_address: 0.try_into().unwrap(), // MVP: not deployed separately
                 creator: caller,
                 pool_tier,
                 created_at: now,
