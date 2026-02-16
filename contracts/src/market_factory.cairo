@@ -53,6 +53,7 @@ pub mod MarketFactory {
         pub pool_tier: PoolTier,
         pub resolution_source: ResolutionSource,
         pub creator_stake: u256,
+        pub min_bets: u32,
     }
 
     #[constructor]
@@ -80,6 +81,7 @@ pub mod MarketFactory {
             pragma_pair_id: felt252,
             target_price: u256,
             creator_stake: u256,
+            min_bets: u32,
         ) -> u64 {
             let caller = get_caller_address();
             let now = get_block_timestamp();
@@ -126,6 +128,7 @@ pub mod MarketFactory {
                         pool_tier,
                         resolution_source,
                         creator_stake,
+                        min_bets,
                     },
                 );
 

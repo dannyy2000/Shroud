@@ -69,6 +69,9 @@ pub mod Market {
 
         // Creator stake tracking
         creator_stake_returned: bool,
+
+        // Track refunded bets on cancelled markets
+        bet_refunded: Map<felt252, bool>,
     }
 
     #[event]
@@ -81,6 +84,8 @@ pub mod Market {
         MarketDisputed: MarketDisputed,
         CreatorStakeReturned: CreatorStakeReturned,
         CreatorStakeSlashed: CreatorStakeSlashed,
+        MarketCancelled: MarketCancelled,
+        RefundClaimed: RefundClaimed,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -123,6 +128,19 @@ pub mod Market {
     pub struct CreatorStakeSlashed {
         pub creator: ContractAddress,
         pub amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct MarketCancelled {
+        pub total_bets: u32,
+        pub min_bets_required: u32,
+        pub timestamp: u64,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct RefundClaimed {
+        pub bet_commitment: felt252,
+        pub recipient: ContractAddress,
     }
 
     #[constructor]
@@ -245,14 +263,18 @@ pub mod Market {
 
         fn resolve(ref self: ContractState, outcome: Outcome) {
             self._update_status();
+            let status = self.status.read();
             let config = self.config.read();
+
+            // Block resolution on cancelled markets
+            assert(status != MarketStatus::Cancelled, 'Market is cancelled');
 
             match config.resolution_source {
                 ResolutionSource::CreatorResolve => {
                     // Only creator can resolve
                     assert(get_caller_address() == config.creator, 'Only creator can resolve');
                     assert(
-                        self.status.read() == MarketStatus::Resolving,
+                        status == MarketStatus::Resolving,
                         'Not ready for resolution',
                     );
                     assert(outcome != Outcome::Pending, 'Invalid outcome');
@@ -276,7 +298,7 @@ pub mod Market {
                     // For MVP, read price from Pragma and compare to target_price
                     // If price >= target_price → Yes, else → No
                     assert(
-                        self.status.read() == MarketStatus::Resolving,
+                        status == MarketStatus::Resolving,
                         'Not ready for resolution',
                     );
 
@@ -365,6 +387,37 @@ pub mod Market {
                         },
                     );
             }
+        }
+
+        fn claim_refund(
+            ref self: ContractState,
+            zk_proof: Span<felt252>,
+            bet_commitment: felt252,
+            recipient: ContractAddress,
+        ) {
+            // Only available on cancelled markets
+            assert(self.status.read() == MarketStatus::Cancelled, 'Market not cancelled');
+
+            // Validate the bet exists and hasn't been refunded
+            assert(self.bet_exists.read(bet_commitment), 'Bet does not exist');
+            assert(!self.bet_refunded.read(bet_commitment), 'Already refunded');
+
+            // Verify ZK proof of bet ownership (same pattern as claim)
+            self._verify_claim_proof(zk_proof, bet_commitment);
+
+            // Mark as refunded
+            self.bet_refunded.write(bet_commitment, true);
+
+            // Refund the tier amount
+            let config = self.config.read();
+            let tier_amount = match config.pool_tier {
+                PoolTier::Small => 10_000_000_000_000_000_000_u256,
+                PoolTier::Medium => 100_000_000_000_000_000_000_u256,
+                PoolTier::Large => 1_000_000_000_000_000_000_000_u256,
+            };
+            self._transfer_out(recipient, tier_amount);
+
+            self.emit(RefundClaimed { bet_commitment, recipient });
         }
 
         fn claim_creator_stake(ref self: ContractState) {
@@ -480,8 +533,24 @@ pub mod Market {
             if current_status == MarketStatus::Open && now > config.bet_deadline {
                 self.status.write(MarketStatus::Revealing);
             }
-            if current_status == MarketStatus::Revealing && now > config.reveal_deadline {
-                self.status.write(MarketStatus::Resolving);
+
+            let updated_status = self.status.read();
+            if updated_status == MarketStatus::Revealing && now > config.reveal_deadline {
+                // Check minimum pool threshold before transitioning to Resolving
+                if config.min_bets > 0
+                    && self.total_revealed.read() < config.min_bets {
+                    self.status.write(MarketStatus::Cancelled);
+                    self
+                        .emit(
+                            MarketCancelled {
+                                total_bets: self.total_revealed.read(),
+                                min_bets_required: config.min_bets,
+                                timestamp: now,
+                            },
+                        );
+                } else {
+                    self.status.write(MarketStatus::Resolving);
+                }
             }
         }
 

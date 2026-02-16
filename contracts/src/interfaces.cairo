@@ -17,6 +17,7 @@ pub enum MarketStatus {
     Resolving,  // Reveals done, awaiting outcome
     Resolved,   // Outcome determined, claims open
     Disputed,   // Creator resolution challenged
+    Cancelled,  // Pool threshold not met, refunds available
 }
 
 /// How the market outcome is determined
@@ -55,6 +56,7 @@ pub struct MarketConfig {
     pub pragma_pair_id: felt252,  // Oracle pair ID (0 if creator-resolved)
     pub target_price: u256,       // Target price for oracle resolution (0 if creator-resolved)
     pub creator_stake: u256,      // Bond amount staked by market creator
+    pub min_bets: u32,            // Minimum total bets required (0 = no minimum)
 }
 
 #[starknet::interface]
@@ -96,6 +98,7 @@ pub trait IMarketFactory<TContractState> {
         pragma_pair_id: felt252,
         target_price: u256,
         creator_stake: u256,
+        min_bets: u32,
     ) -> u64;
 
     /// Get total number of markets
@@ -159,6 +162,14 @@ pub trait IMarket<TContractState> {
 
     /// Dispute a creator-resolved outcome (within dispute window)
     fn dispute(ref self: TContractState);
+
+    /// Claim refund on a cancelled market (threshold not met)
+    fn claim_refund(
+        ref self: TContractState,
+        zk_proof: Span<felt252>,
+        bet_commitment: felt252,
+        recipient: ContractAddress,
+    );
 
     /// Creator reclaims their bond after dispute window on a non-disputed market
     fn claim_creator_stake(ref self: TContractState);
