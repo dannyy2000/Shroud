@@ -54,6 +54,7 @@ pub struct MarketConfig {
     pub pool_tier: PoolTier,
     pub pragma_pair_id: felt252,  // Oracle pair ID (0 if creator-resolved)
     pub target_price: u256,       // Target price for oracle resolution (0 if creator-resolved)
+    pub creator_stake: u256,      // Bond amount staked by market creator
 }
 
 #[starknet::interface]
@@ -84,7 +85,7 @@ pub trait IDepositPool<TContractState> {
 
 #[starknet::interface]
 pub trait IMarketFactory<TContractState> {
-    /// Create a new prediction market
+    /// Create a new prediction market (requires STRK bond from creator)
     fn create_market(
         ref self: TContractState,
         question: ByteArray,
@@ -94,6 +95,7 @@ pub trait IMarketFactory<TContractState> {
         pool_tier: PoolTier,
         pragma_pair_id: felt252,
         target_price: u256,
+        creator_stake: u256,
     ) -> u64;
 
     /// Get total number of markets
@@ -157,6 +159,9 @@ pub trait IMarket<TContractState> {
 
     /// Dispute a creator-resolved outcome (within dispute window)
     fn dispute(ref self: TContractState);
+
+    /// Creator reclaims their bond after dispute window on a non-disputed market
+    fn claim_creator_stake(ref self: TContractState);
 
     // -- View functions --
 

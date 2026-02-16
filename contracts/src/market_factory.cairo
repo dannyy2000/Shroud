@@ -7,7 +7,7 @@
 #[starknet::contract]
 pub mod MarketFactory {
     use starknet::{
-        ContractAddress, get_caller_address, get_block_timestamp,
+        ContractAddress, get_caller_address, get_block_timestamp, get_contract_address,
         storage::{
             Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
             StoragePointerWriteAccess,
@@ -22,12 +22,14 @@ pub mod MarketFactory {
         creator: ContractAddress,
         pool_tier: PoolTier,
         created_at: u64,
+        creator_stake: u256,
     }
 
     #[storage]
     struct Storage {
         owner: ContractAddress,
         deposit_pool: ContractAddress,
+        strk_token: ContractAddress,
         market_class_hash: felt252,
         market_count: u64,
         markets: Map<u64, MarketInfo>,
@@ -50,6 +52,7 @@ pub mod MarketFactory {
         pub reveal_deadline: u64,
         pub pool_tier: PoolTier,
         pub resolution_source: ResolutionSource,
+        pub creator_stake: u256,
     }
 
     #[constructor]
@@ -57,9 +60,11 @@ pub mod MarketFactory {
         ref self: ContractState,
         owner: ContractAddress,
         deposit_pool: ContractAddress,
+        strk_token: ContractAddress,
     ) {
         self.owner.write(owner);
         self.deposit_pool.write(deposit_pool);
+        self.strk_token.write(strk_token);
         self.market_count.write(0);
     }
 
@@ -74,6 +79,7 @@ pub mod MarketFactory {
             pool_tier: PoolTier,
             pragma_pair_id: felt252,
             target_price: u256,
+            creator_stake: u256,
         ) -> u64 {
             let caller = get_caller_address();
             let now = get_block_timestamp();
@@ -87,6 +93,11 @@ pub mod MarketFactory {
                 assert(pragma_pair_id != 0, 'Oracle pair ID required');
             }
 
+            // Escrow creator's STRK bond if provided
+            if creator_stake > 0 {
+                self._transfer_in(caller, creator_stake);
+            }
+
             // Create market ID
             let market_id = self.market_count.read();
 
@@ -97,6 +108,7 @@ pub mod MarketFactory {
                 creator: caller,
                 pool_tier,
                 created_at: now,
+                creator_stake,
             };
 
             self.markets.write(market_id, market_info);
@@ -113,6 +125,7 @@ pub mod MarketFactory {
                         reveal_deadline,
                         pool_tier,
                         resolution_source,
+                        creator_stake,
                     },
                 );
 
@@ -130,6 +143,29 @@ pub mod MarketFactory {
 
         fn get_deposit_pool(self: @ContractState) -> ContractAddress {
             self.deposit_pool.read()
+        }
+    }
+
+    // -- Internal functions --
+    #[generate_trait]
+    impl InternalImpl of InternalTrait {
+        /// Transfer STRK tokens from user to this contract (for creator bond)
+        fn _transfer_in(ref self: ContractState, from: ContractAddress, amount: u256) {
+            let strk = self.strk_token.read();
+            let this = get_contract_address();
+
+            let mut calldata: Array<felt252> = array![];
+            from.serialize(ref calldata);
+            this.serialize(ref calldata);
+            amount.serialize(ref calldata);
+
+            let mut result = starknet::syscalls::call_contract_syscall(
+                strk, selector!("transferFrom"), calldata.span(),
+            )
+                .unwrap();
+
+            let success = Serde::<bool>::deserialize(ref result).unwrap();
+            assert(success, 'STRK transfer failed');
         }
     }
 

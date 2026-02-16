@@ -66,6 +66,9 @@ pub mod Market {
 
         // Protocol fee recipient
         protocol_fee_recipient: ContractAddress,
+
+        // Creator stake tracking
+        creator_stake_returned: bool,
     }
 
     #[event]
@@ -76,6 +79,8 @@ pub mod Market {
         MarketResolved: MarketResolved,
         WinningsClaimed: WinningsClaimed,
         MarketDisputed: MarketDisputed,
+        CreatorStakeReturned: CreatorStakeReturned,
+        CreatorStakeSlashed: CreatorStakeSlashed,
     }
 
     #[derive(Drop, starknet::Event)]
@@ -108,6 +113,18 @@ pub mod Market {
         pub timestamp: u64,
     }
 
+    #[derive(Drop, starknet::Event)]
+    pub struct CreatorStakeReturned {
+        pub creator: ContractAddress,
+        pub amount: u256,
+    }
+
+    #[derive(Drop, starknet::Event)]
+    pub struct CreatorStakeSlashed {
+        pub creator: ContractAddress,
+        pub amount: u256,
+    }
+
     #[constructor]
     fn constructor(
         ref self: ContractState,
@@ -130,6 +147,7 @@ pub mod Market {
         self.market_id.write(market_id);
         self.strk_token.write(strk_token);
         self.protocol_fee_recipient.write(protocol_fee_recipient);
+        self.creator_stake_returned.write(false);
         self.total_bets.write(0);
         self.total_revealed.write(0);
         self.yes_count.write(0);
@@ -335,6 +353,49 @@ pub mod Market {
 
             self.status.write(MarketStatus::Disputed);
             self.emit(MarketDisputed { disputed_by: get_caller_address(), timestamp: now });
+
+            // Slash creator's stake — transfer to protocol treasury
+            if config.creator_stake > 0 && !self.creator_stake_returned.read() {
+                self.creator_stake_returned.write(true);
+                self._transfer_out(self.protocol_fee_recipient.read(), config.creator_stake);
+                self
+                    .emit(
+                        CreatorStakeSlashed {
+                            creator: config.creator, amount: config.creator_stake,
+                        },
+                    );
+            }
+        }
+
+        fn claim_creator_stake(ref self: ContractState) {
+            let config = self.config.read();
+            assert(config.creator_stake > 0, 'No stake to claim');
+            assert(!self.creator_stake_returned.read(), 'Stake already returned');
+
+            let caller = get_caller_address();
+            assert(caller == config.creator, 'Only creator can claim stake');
+
+            let status = self.status.read();
+
+            // Creator can reclaim bond after dispute window closes on a non-disputed market
+            // For oracle-resolved markets, claimable immediately after resolution
+            match config.resolution_source {
+                ResolutionSource::CreatorResolve => {
+                    assert(status == MarketStatus::Resolved, 'Market not resolved');
+                    let now = get_block_timestamp();
+                    assert(now > config.dispute_deadline, 'Dispute window still open');
+                },
+                ResolutionSource::PragmaOracle => {
+                    assert(status == MarketStatus::Resolved, 'Market not resolved');
+                },
+            }
+
+            self.creator_stake_returned.write(true);
+            self._transfer_out(config.creator, config.creator_stake);
+            self
+                .emit(
+                    CreatorStakeReturned { creator: config.creator, amount: config.creator_stake },
+                );
         }
 
         // -- View functions --
