@@ -20,6 +20,7 @@ pub mod Market {
     use shroud::interfaces::{
         IMarket, IDepositPoolDispatcher, IDepositPoolDispatcherTrait,
         IUltraKeccakZKHonkVerifierDispatcher, IUltraKeccakZKHonkVerifierDispatcherTrait,
+        IPragmaOracleDispatcher, IPragmaOracleDispatcherTrait,
         MarketStatus, MarketConfig, Outcome, ResolutionSource, PoolTier, Bet,
     };
 
@@ -29,6 +30,9 @@ pub mod Market {
     // Protocol fee: 2% (represented as 200 basis points)
     const PROTOCOL_FEE_BPS: u256 = 200;
     const BPS_DENOMINATOR: u256 = 10000;
+
+    // Pragma data type for spot price
+    const PRAGMA_SPOT_ENTRY: felt252 = 'SPOT';
 
     #[storage]
     struct Storage {
@@ -66,6 +70,9 @@ pub mod Market {
 
         // Protocol fee recipient
         protocol_fee_recipient: ContractAddress,
+
+        // Pragma oracle address
+        pragma_oracle: ContractAddress,
 
         // Creator stake tracking
         creator_stake_returned: bool,
@@ -154,6 +161,7 @@ pub mod Market {
         market_id: felt252,
         strk_token: ContractAddress,
         protocol_fee_recipient: ContractAddress,
+        pragma_oracle: ContractAddress,
     ) {
         self.config.write(config);
         self.question.write(question);
@@ -165,6 +173,7 @@ pub mod Market {
         self.market_id.write(market_id);
         self.strk_token.write(strk_token);
         self.protocol_fee_recipient.write(protocol_fee_recipient);
+        self.pragma_oracle.write(pragma_oracle);
         self.creator_stake_returned.write(false);
         self.total_bets.write(0);
         self.total_revealed.write(0);
@@ -294,26 +303,48 @@ pub mod Market {
                         );
                 },
                 ResolutionSource::PragmaOracle => {
-                    // TODO: Integrate Pragma oracle price feed
-                    // For MVP, read price from Pragma and compare to target_price
-                    // If price >= target_price → Yes, else → No
                     assert(
                         status == MarketStatus::Resolving,
                         'Not ready for resolution',
                     );
 
-                    // Placeholder: In production, this reads from Pragma oracle contract
-                    assert(outcome != Outcome::Pending, 'Invalid outcome');
-                    self.resolved_outcome.write(outcome);
+                    // Fetch price from Pragma oracle
+                    let oracle = IPragmaOracleDispatcher {
+                        contract_address: self.pragma_oracle.read(),
+                    };
+                    let (price, decimals, _last_updated, _num_sources) = oracle
+                        .get_data(PRAGMA_SPOT_ENTRY, config.pragma_pair_id);
+
+                    // Normalize oracle price to 18 decimals for comparison with target_price
+                    let oracle_price_normalized = if decimals < 18 {
+                        let scale_factor = pow10((18 - decimals));
+                        price * scale_factor
+                    } else if decimals > 18 {
+                        let scale_factor = pow10((decimals - 18));
+                        price / scale_factor
+                    } else {
+                        price
+                    };
+
+                    // Determine outcome: Yes if price >= target, No otherwise
+                    let resolved_outcome = if oracle_price_normalized >= config.target_price {
+                        Outcome::Yes
+                    } else {
+                        Outcome::No
+                    };
+
+                    self.resolved_outcome.write(resolved_outcome);
 
                     let forfeited = self.total_bets.read() - self.total_revealed.read();
                     self.forfeited_count.write(forfeited);
 
+                    // No dispute window for oracle-resolved markets
                     self.status.write(MarketStatus::Resolved);
                     self
                         .emit(
                             MarketResolved {
-                                outcome, resolution_source: ResolutionSource::PragmaOracle,
+                                outcome: resolved_outcome,
+                                resolution_source: ResolutionSource::PragmaOracle,
                             },
                         );
                 },
@@ -697,5 +728,15 @@ pub mod Market {
             Outcome::Yes => 1,
             Outcome::No => 2,
         }
+    }
+
+    fn pow10(exp: u32) -> u256 {
+        let mut result: u256 = 1;
+        let mut i: u32 = 0;
+        while i < exp {
+            result = result * 10;
+            i += 1;
+        };
+        result
     }
 }

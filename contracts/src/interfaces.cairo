@@ -119,6 +119,16 @@ pub trait IUltraKeccakZKHonkVerifier<TContractState> {
     ) -> Result<Span<u256>, felt252>;
 }
 
+/// Pragma Oracle interface for price feed resolution
+#[starknet::interface]
+pub trait IPragmaOracle<TContractState> {
+    /// Get the latest price data for a given pair ID.
+    /// Returns (price, decimals, last_updated_timestamp, num_sources).
+    fn get_data(
+        self: @TContractState, data_type: felt252, pair_id: felt252,
+    ) -> (u256, u32, u64, u32);
+}
+
 #[starknet::interface]
 pub trait IMarket<TContractState> {
     /// Place an anonymous bet.
