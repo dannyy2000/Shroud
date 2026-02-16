@@ -171,4 +171,5 @@ pub trait IMarket<TContractState> {
     fn get_pool_balance(self: @TContractState) -> u256;
     fn is_bet_revealed(self: @TContractState, bet_commitment: felt252) -> bool;
     fn is_bet_claimed(self: @TContractState, bet_commitment: felt252) -> bool;
+    fn get_protocol_fee_recipient(self: @TContractState) -> ContractAddress;
 }

@@ -26,6 +26,10 @@ pub mod Market {
     // Dispute window: 48 hours after creator resolution
     const DISPUTE_WINDOW: u64 = 172800;
 
+    // Protocol fee: 2% (represented as 200 basis points)
+    const PROTOCOL_FEE_BPS: u256 = 200;
+    const BPS_DENOMINATOR: u256 = 10000;
+
     #[storage]
     struct Storage {
         // Market configuration
@@ -59,6 +63,9 @@ pub mod Market {
 
         // STRK token address
         strk_token: ContractAddress,
+
+        // Protocol fee recipient
+        protocol_fee_recipient: ContractAddress,
     }
 
     #[event]
@@ -111,6 +118,7 @@ pub mod Market {
         claim_verifier: ContractAddress,
         market_id: felt252,
         strk_token: ContractAddress,
+        protocol_fee_recipient: ContractAddress,
     ) {
         self.config.write(config);
         self.question.write(question);
@@ -121,6 +129,7 @@ pub mod Market {
         self.claim_verifier.write(claim_verifier);
         self.market_id.write(market_id);
         self.strk_token.write(strk_token);
+        self.protocol_fee_recipient.write(protocol_fee_recipient);
         self.total_bets.write(0);
         self.total_revealed.write(0);
         self.yes_count.write(0);
@@ -299,8 +308,13 @@ pub mod Market {
             bet.claimed = true;
             self.bets.write(bet_commitment, bet);
 
-            // Calculate payout
-            let payout = self._calculate_payout();
+            // Calculate payout (after 2% protocol fee)
+            let (payout, fee) = self._calculate_payout();
+
+            // Transfer protocol fee to fee recipient
+            if fee > 0 {
+                self._transfer_out(self.protocol_fee_recipient.read(), fee);
+            }
 
             // Transfer winnings to recipient (any address — can be fresh wallet)
             self._transfer_out(recipient, payout);
@@ -385,6 +399,10 @@ pub mod Market {
                 return false;
             }
             self.bets.read(bet_commitment).claimed
+        }
+
+        fn get_protocol_fee_recipient(self: @ContractState) -> ContractAddress {
+            self.protocol_fee_recipient.read()
         }
     }
 
@@ -492,8 +510,8 @@ pub mod Market {
             assert(proof_market_id == self.market_id.read(), 'Market ID mismatch');
         }
 
-        /// Calculate payout per winning bet
-        fn _calculate_payout(self: @ContractState) -> u256 {
+        /// Calculate payout per winning bet (returns (winner_payout, protocol_fee))
+        fn _calculate_payout(self: @ContractState) -> (u256, u256) {
             let config = self.config.read();
             let tier_amount = match config.pool_tier {
                 PoolTier::Small => 10_000_000_000_000_000_000_u256,   // 10 STRK
@@ -511,11 +529,17 @@ pub mod Market {
             };
 
             if winner_count == 0 {
-                return 0;
+                return (0, 0);
             }
 
             // Total pool (including forfeited bets) split among winners
-            total_pool / winner_count.into()
+            let gross_payout_per_winner = total_pool / winner_count.into();
+
+            // Deduct 2% protocol fee
+            let fee_per_winner = gross_payout_per_winner * PROTOCOL_FEE_BPS / BPS_DENOMINATOR;
+            let net_payout = gross_payout_per_winner - fee_per_winner;
+
+            (net_payout, fee_per_winner)
         }
 
         /// Transfer STRK tokens from this contract to recipient
