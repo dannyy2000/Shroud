@@ -1,0 +1,184 @@
+@import "tailwindcss";
+@config '../tailwind.config.ts';
+
+@plugin "daisyui";
+
+@plugin "daisyui/theme" {
+  name: "shroud";
+  default: true;
+  prefersdark: true;
+  color-scheme: dark;
+
+  --color-base-content: #e6edf3;
+  --color-base-100: #0d1117;
+  --color-base-200: #161b22;
+  --color-base-300: #0d1117;
+  --color-primary: #58a6ff;
+  --color-primary-content: #0d1117;
+  --color-secondary: #8b45fd;
+  --color-secondary-content: #e6edf3;
+  --color-accent: #58a6ff;
+  --color-accent-content: #0d1117;
+  --color-neutral: #e6edf3;
+  --color-neutral-content: #30363d;
+  --color-info: #58a6ff;
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-error: #f85149;
+  --rounded-btn: 9999rem;
+}
+
+/* Shroud dark theme utilities */
+:root {
+  --shroud-bg: #0d1117;
+  --shroud-card: #161b22;
+  --shroud-border: #30363d;
+  --shroud-text: #e6edf3;
+  --shroud-text-secondary: #8b949e;
+  --shroud-green: #3fb950;
+  --shroud-red: #f85149;
+  --shroud-blue: #58a6ff;
+}
+
+body {
+  background-color: var(--shroud-bg);
+  color: var(--shroud-text);
+  min-height: 100vh;
+}
+
+html {
+  overflow-y: scroll;
+  overflow-x: hidden;
+}
+
+/* Card styling */
+.shroud-card {
+  background-color: var(--shroud-card);
+  border: 1px solid var(--shroud-border);
+  border-radius: 12px;
+}
+
+.shroud-card:hover {
+  border-color: #484f58;
+}
+
+/* Button base */
+.shroud-btn {
+  border-radius: 8px;
+  font-weight: 600;
+  padding: 10px 20px;
+  transition: all 0.15s ease;
+}
+
+.shroud-btn-yes {
+  background-color: #3fb950;
+  color: #0d1117;
+}
+
+.shroud-btn-yes:hover {
+  background-color: #56d364;
+}
+
+.shroud-btn-no {
+  background-color: #f85149;
+  color: #0d1117;
+}
+
+.shroud-btn-no:hover {
+  background-color: #ff6e6a;
+}
+
+.shroud-btn-primary {
+  background-color: #58a6ff;
+  color: #0d1117;
+}
+
+.shroud-btn-primary:hover {
+  background-color: #79b8ff;
+}
+
+/* Input styling */
+.shroud-input {
+  background-color: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  color: #e6edf3;
+  padding: 10px 14px;
+}
+
+.shroud-input:focus {
+  border-color: #58a6ff;
+  outline: none;
+}
+
+/* Status badges */
+.status-badge {
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0d1117;
+}
+
+/* Gradient accents */
+.shroud-gradient {
+  background: linear-gradient(135deg, #58a6ff 0%, #8b45fd 100%);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(88, 166, 255, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(88, 166, 255, 0); }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+/* Scaffold overrides */
+.bg-main {
+  background: #0d1117 !important;
+}
+
+.bg-container {
+  background: transparent !important;
+}
+
+.bg-gradient-nav {
+  background: #161b22 !important;
+}
+
+.modal-box {
+  min-height: auto;
+  max-width: 400px;
+  overflow: hidden;
+  transform: translateZ(0);
+}
+
+.btn {
+  box-shadow: none;
+}
