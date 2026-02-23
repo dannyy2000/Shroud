@@ -1,150 +1,97 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { formatUnits } from "ethers";
 import type { MarketData } from "~~/components/MarketCard";
+import { useMarkets } from "./useMarkets";
+import { getMarketAddress, getMarketContract, isZeroAddress } from "~~/lib/contracts";
 
-// Mock single market fetch — will be replaced with contract reads
+const STATUS_MAP: Record<string, string> = {
+  Open: "Open",
+  Revealing: "Revealing",
+  Resolving: "Resolving",
+  Resolved: "Resolved",
+  Disputed: "Disputed",
+  Cancelled: "Cancelled",
+};
+
+// Single market — event data merged with live on-chain reads
 export function useMarket(id: number) {
+  const { markets, loading: marketsLoading } = useMarkets();
   const [market, setMarket] = useState<MarketData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [contractDeployed, setContractDeployed] = useState<boolean | null>(null);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      // Mock data matching the markets list
-      const mockMarkets: Record<number, MarketData> = {
-        1: {
-          id: 1,
-          question: "Will BTC break $150K before March 2026?",
-          status: "Open",
-          poolTier: 1,
-          totalBets: 24,
-          yesCount: 15,
-          noCount: 9,
-          betDeadline: Math.floor(Date.now() / 1000) + 86400 * 3,
-          revealDeadline: Math.floor(Date.now() / 1000) + 86400 * 4,
-          resolutionSource: "PragmaOracle",
-          category: "Crypto",
-          poolBalance: "2,400 STRK",
-        },
-        2: {
-          id: 2,
-          question: "Will ETH flip BTC in market cap by 2027?",
-          status: "Open",
-          poolTier: 2,
-          totalBets: 42,
-          yesCount: 18,
-          noCount: 24,
-          betDeadline: Math.floor(Date.now() / 1000) + 86400 * 7,
-          revealDeadline: Math.floor(Date.now() / 1000) + 86400 * 8,
-          resolutionSource: "CreatorResolve",
-          category: "Crypto",
-          poolBalance: "42,000 STRK",
-        },
-        3: {
-          id: 3,
-          question: "Will the Lakers win the 2026 NBA Championship?",
-          status: "Open",
-          poolTier: 0,
-          totalBets: 67,
-          yesCount: 30,
-          noCount: 37,
-          betDeadline: Math.floor(Date.now() / 1000) + 86400 * 14,
-          revealDeadline: Math.floor(Date.now() / 1000) + 86400 * 15,
-          resolutionSource: "CreatorResolve",
-          category: "Sports",
-          poolBalance: "670 STRK",
-        },
-        4: {
-          id: 4,
-          question: "Will Starknet TVL exceed $5B by Q3 2026?",
-          status: "Revealing",
-          poolTier: 1,
-          totalBets: 35,
-          yesCount: 22,
-          noCount: 13,
-          betDeadline: Math.floor(Date.now() / 1000) - 3600,
-          revealDeadline: Math.floor(Date.now() / 1000) + 86400 * 2,
-          resolutionSource: "PragmaOracle",
-          category: "Crypto",
-          poolBalance: "3,500 STRK",
-        },
-        5: {
-          id: 5,
-          question: "Will AI pass the Turing test definitively in 2026?",
-          status: "Open",
-          poolTier: 0,
-          totalBets: 89,
-          yesCount: 51,
-          noCount: 38,
-          betDeadline: Math.floor(Date.now() / 1000) + 86400 * 30,
-          revealDeadline: Math.floor(Date.now() / 1000) + 86400 * 31,
-          resolutionSource: "CreatorResolve",
-          category: "Entertainment",
-          poolBalance: "890 STRK",
-        },
-        6: {
-          id: 6,
-          question: "Will US inflation drop below 2% by end of 2026?",
-          status: "Resolved",
-          poolTier: 2,
-          totalBets: 156,
-          yesCount: 72,
-          noCount: 84,
-          betDeadline: Math.floor(Date.now() / 1000) - 86400 * 10,
-          revealDeadline: Math.floor(Date.now() / 1000) - 86400 * 9,
-          resolutionSource: "PragmaOracle",
-          category: "Politics",
-          poolBalance: "156,000 STRK",
-        },
-        7: {
-          id: 7,
-          question: "Will STRK token reach $5 in 2026?",
-          status: "Open",
-          poolTier: 0,
-          totalBets: 12,
-          yesCount: 8,
-          noCount: 4,
-          betDeadline: Math.floor(Date.now() / 1000) + 86400 * 5,
-          revealDeadline: Math.floor(Date.now() / 1000) + 86400 * 6,
-          resolutionSource: "PragmaOracle",
-          category: "Crypto",
-          poolBalance: "120 STRK",
-        },
-        8: {
-          id: 8,
-          question: "Will the next FIFA World Cup have an African finalist?",
-          status: "Open",
-          poolTier: 1,
-          totalBets: 45,
-          yesCount: 20,
-          noCount: 25,
-          betDeadline: Math.floor(Date.now() / 1000) + 86400 * 60,
-          revealDeadline: Math.floor(Date.now() / 1000) + 86400 * 61,
-          resolutionSource: "CreatorResolve",
-          category: "Sports",
-          poolBalance: "4,500 STRK",
-        },
-        9: {
-          id: 9,
-          question: "Will a major country adopt Bitcoin as legal tender in 2026?",
-          status: "Cancelled",
-          poolTier: 0,
-          totalBets: 3,
-          yesCount: 2,
-          noCount: 1,
-          betDeadline: Math.floor(Date.now() / 1000) - 86400 * 5,
-          revealDeadline: Math.floor(Date.now() / 1000) - 86400 * 4,
-          resolutionSource: "CreatorResolve",
-          category: "Politics",
-          poolBalance: "30 STRK",
-        },
-      };
+    if (marketsLoading) return;
 
-      setMarket(mockMarkets[id] || null);
+    const base = markets.find((m) => m.id === id);
+    if (!base) {
+      setMarket(null);
       setLoading(false);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [id]);
+      return;
+    }
 
-  return { market, loading };
+    // Set base data immediately so the page isn't blank while we fetch live data
+    setMarket(base);
+    setLoading(false);
+
+    // Then fetch live on-chain data
+    const fetchLive = async () => {
+      try {
+        // Check if the market contract is separately deployed
+        // (factory MVP sets market_address = 0x0)
+        let address: string;
+        try {
+          address = await getMarketAddress(id);
+        } catch {
+          // Market contract not deployed (factory MVP limitation)
+          setContractDeployed(false);
+          return;
+        }
+        setContractDeployed(true);
+        const contract = getMarketContract(address);
+
+        const [totalBets, yesCount, noCount, poolBalanceRaw, statusRaw, outcomeRaw] = await Promise.all([
+          contract.get_total_bets(),
+          contract.get_yes_count(),
+          contract.get_no_count(),
+          contract.get_pool_balance(),
+          contract.get_status(),
+          contract.get_outcome(),
+        ]);
+
+        const poolBalanceBig = BigInt(poolBalanceRaw?.low ?? poolBalanceRaw ?? 0n);
+        const poolBalanceFormatted = parseFloat(formatUnits(poolBalanceBig, 18)).toFixed(4);
+
+        // get_status / get_outcome return variant objects like { Open: {} } or { Yes: {} }
+        const statusVariant = statusRaw?.activeVariant?.() ?? Object.keys(statusRaw ?? {})[0] ?? "Open";
+        const status = STATUS_MAP[statusVariant] ?? base.status;
+
+        const outcomeVariant = outcomeRaw?.activeVariant?.() ?? Object.keys(outcomeRaw ?? {})[0] ?? "Pending";
+        const outcome = outcomeVariant === "Yes" || outcomeVariant === "No" ? outcomeVariant : undefined;
+
+        setMarket((prev) =>
+          prev
+            ? {
+                ...prev,
+                address,
+                totalBets: Number(totalBets),
+                yesCount: Number(yesCount),
+                noCount: Number(noCount),
+                poolBalance: `${poolBalanceFormatted} STRK`,
+                status,
+                outcome,
+              }
+            : prev,
+        );
+      } catch (err) {
+        console.error("Failed to fetch live market data:", err);
+      }
+    };
+
+    fetchLive();
+  }, [id, markets, marketsLoading]);
+
+  return { market, loading, contractDeployed };
 }

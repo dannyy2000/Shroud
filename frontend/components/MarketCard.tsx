@@ -20,6 +20,8 @@ export interface MarketData {
   resolutionSource: string;
   category?: string;
   poolBalance?: string;
+  address?: string;
+  outcome?: string; // "Yes" | "No" | "Pending" — set after resolution
 }
 
 interface MarketCardProps {

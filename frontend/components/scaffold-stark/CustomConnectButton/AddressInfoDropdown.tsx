@@ -67,12 +67,8 @@ export const AddressInfoDropdown = ({
   return (
     <details ref={dropdownRef} className="dropdown dropdown-end leading-3">
       <summary
-        className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer border transition-colors"
-        style={{
-          backgroundColor: "#161b22",
-          borderColor: "#30363d",
-          color: "#e6edf3",
-        }}
+        className="flex items-center gap-2 cursor-pointer transition-colors list-none"
+        style={{ color: "#e6edf3" }}
       >
         <Avatar
           address={address}

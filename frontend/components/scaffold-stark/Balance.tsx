@@ -36,53 +36,38 @@ export const Balance = ({ address, className = "", usdMode }: BalanceProps) => {
 
   if (!address || strkIsLoading || strkFormatted === null) {
     return (
-      <div className="animate-pulse flex space-x-4">
-        <div className="rounded-md bg-slate-300 h-6 w-6"></div>
-        <div className="flex items-center space-y-6">
-          <div className="h-2 w-28 bg-slate-300 rounded-sm"></div>
-        </div>
-      </div>
+      <div className="animate-pulse h-4 w-20 rounded" style={{ backgroundColor: "#30363d" }} />
     );
   }
 
   if (strkIsError) {
-    return (
-      <div
-        className={`border-2 border-gray-400 rounded-md px-2 flex flex-col items-center max-w-fit cursor-pointer`}
-      >
-        <div className="text-warning">Error</div>
-      </div>
-    );
+    return null;
   }
 
   // Calculate the balance in USD
   const strkBalanceInUsd = parseFloat(strkFormatted) * strkPrice;
 
   return (
-    <>
-      <button
-        className={` btn btn-sm btn-ghost flex flex-col font-normal items-center hover:bg-transparent ${className}`}
-        onClick={toggleBalanceMode}
-      >
-        <div className="w-full flex items-center justify-center">
-          {displayUsdMode ? (
-            <div className="flex">
-              <span className="text-[0.8em] font-bold mr-1">$</span>
-              <span>
-                {strkBalanceInUsd.toLocaleString("en-US", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-              </span>
-            </div>
-          ) : (
-            <div className="flex">
-              <span>{parseFloat(strkFormatted).toFixed(4)}</span>
-              <span className="text-[0.8em] font-bold ml-1">{strkSymbol}</span>
-            </div>
-          )}
-        </div>
-      </button>
-    </>
+    <button
+      onClick={toggleBalanceMode}
+      className={`flex items-baseline gap-1 leading-none ${className}`}
+      style={{ background: "none", border: "none", padding: 0, cursor: strkPrice > 0 ? "pointer" : "default" }}
+    >
+      {displayUsdMode ? (
+        <>
+          <span className="text-xs font-medium" style={{ color: "#8b949e" }}>$</span>
+          <span className="text-sm font-semibold" style={{ color: "#e6edf3" }}>
+            {strkBalanceInUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="text-sm font-semibold" style={{ color: "#e6edf3" }}>
+            {parseFloat(strkFormatted).toFixed(4)}
+          </span>
+          <span className="text-xs font-medium" style={{ color: "#8b949e" }}>{strkSymbol}</span>
+        </>
+      )}
+    </button>
   );
 };

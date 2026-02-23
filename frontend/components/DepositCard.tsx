@@ -1,25 +1,31 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAccount } from "@starknet-react/core";
+import { CallData, cairo, hash } from "starknet";
 import toast from "react-hot-toast";
-import { POOL_TIERS } from "~~/lib/constants";
+import { POOL_TIERS, CONTRACTS } from "~~/lib/constants";
 import { generateRandomFelt } from "~~/lib/utils";
 import { useSecretNotes, type SecretNote } from "~~/hooks/useSecretNotes";
 
 interface DepositCardProps {
   tier: (typeof POOL_TIERS)[number];
   depositCount: number;
+  onDeposited?: () => void;
 }
 
-export const DepositCard = ({ tier, depositCount }: DepositCardProps) => {
-  const { address, status } = useAccount();
+export const DepositCard = ({ tier, depositCount, onDeposited }: DepositCardProps) => {
+  const { account, address, status } = useAccount();
   const { addNote } = useSecretNotes();
+  const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [step, setStep] = useState<"idle" | "approving" | "depositing" | "done">("idle");
+  const [lastNoteId, setLastNoteId] = useState<string | null>(null);
 
   const handleDeposit = async () => {
-    if (status !== "connected" || !address) {
+    if (status !== "connected" || !account || !address) {
       toast.error("Connect your wallet first");
       return;
     }
@@ -31,15 +37,36 @@ export const DepositCard = ({ tier, depositCount }: DepositCardProps) => {
       // Generate secret + nullifier client-side
       const secret = generateRandomFelt();
       const nullifier = generateRandomFelt();
-      // In production: commitment = poseidon_hash(secret, nullifier)
-      const commitment = `0x${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
+      // commitment = poseidon(secret, nullifier) — matches the ZK circuit's public input
+      const commitment = hash.computePoseidonHashOnElements([secret, nullifier]);
 
-      // Step 1: Approve STRK
-      await new Promise((r) => setTimeout(r, 800));
+      // Multicall: approve STRK + deposit in one transaction
       setStep("depositing");
+      const tx = await account.execute([
+        {
+          contractAddress: CONTRACTS.STRK_TOKEN,
+          entrypoint: "approve",
+          calldata: CallData.compile({
+            spender: CONTRACTS.DEPOSIT_POOL,
+            amount: cairo.uint256(BigInt(tier.amountWei)),
+          }),
+        },
+        {
+          contractAddress: CONTRACTS.DEPOSIT_POOL,
+          entrypoint: "deposit",
+          calldata: CallData.compile({
+            commitment,
+            tier: tier.id, // enum variant index: 0=Small, 1=Medium, 2=Large
+          }),
+        },
+      ]);
 
-      // Step 2: Deposit
-      await new Promise((r) => setTimeout(r, 800));
+      toast.loading("Waiting for confirmation...", { id: "deposit-tx" });
+      // Wait for the transaction - starknet.js v9 uses waitForTransaction on provider
+      const { RpcProvider } = await import("starknet");
+      const provider = new RpcProvider({ nodeUrl: process.env.NEXT_PUBLIC_SEPOLIA_PROVIDER_URL || "https://starknet-sepolia-rpc.publicnode.com" });
+      await provider.waitForTransaction(tx.transaction_hash);
+      toast.dismiss("deposit-tx");
 
       // Save secret note to localStorage
       const note: SecretNote = {
@@ -54,10 +81,17 @@ export const DepositCard = ({ tier, depositCount }: DepositCardProps) => {
       };
 
       addNote(note);
+      setLastNoteId(note.id);
       setStep("done");
       toast.success(`Deposited ${tier.amount} STRK! Secret note saved.`);
-    } catch (err) {
-      toast.error("Deposit failed");
+      onDeposited?.();
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (msg.includes("User abort") || msg.includes("rejected")) {
+        toast.error("Transaction rejected");
+      } else {
+        toast.error("Deposit failed: " + msg.slice(0, 100));
+      }
       console.error(err);
       setStep("idle");
     } finally {
@@ -133,11 +167,36 @@ export const DepositCard = ({ tier, depositCount }: DepositCardProps) => {
       )}
 
       {step === "done" ? (
-        <div
-          className="p-3 rounded-lg text-center text-sm font-medium"
-          style={{ backgroundColor: "rgba(63, 185, 80, 0.1)", color: "#3fb950", border: "1px solid #3fb950" }}
-        >
-          Deposit complete! Secret note saved to browser.
+        <div className="space-y-3">
+          <div
+            className="p-3 rounded-lg text-center text-sm font-medium"
+            style={{ backgroundColor: "rgba(63, 185, 80, 0.1)", color: "#3fb950", border: "1px solid #3fb950" }}
+          >
+            Deposit complete! Secret note saved.
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => router.back()}
+              className="py-2.5 rounded-xl text-sm font-semibold transition-all"
+              style={{ backgroundColor: "#58a6ff", color: "#0d1117" }}
+            >
+              Go Back &amp; Bet
+            </button>
+            <Link
+              href="/"
+              className="py-2.5 rounded-xl text-sm font-semibold text-center transition-all"
+              style={{ backgroundColor: "#21262d", border: "1px solid #30363d", color: "#e6edf3" }}
+            >
+              All Markets
+            </Link>
+          </div>
+          <button
+            onClick={() => setStep("idle")}
+            className="w-full text-xs"
+            style={{ color: "#8b949e" }}
+          >
+            Deposit another note
+          </button>
         </div>
       ) : (
         <button

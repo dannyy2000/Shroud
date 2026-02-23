@@ -3,11 +3,11 @@
 import { DepositCard } from "~~/components/DepositCard";
 import { POOL_TIERS } from "~~/lib/constants";
 import { useSecretNotes } from "~~/hooks/useSecretNotes";
-
-const MOCK_DEPOSIT_COUNTS = [47, 23, 8];
+import { useDepositCounts } from "~~/hooks/useDepositPool";
 
 export default function DepositPage() {
   const { notes, exportNotes } = useSecretNotes();
+  const { counts: depositCounts, refetch: refetchCounts } = useDepositCounts();
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 animate-fadeIn">
@@ -34,7 +34,7 @@ export default function DepositPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         {POOL_TIERS.map((tier, idx) => (
-          <DepositCard key={tier.id} tier={tier} depositCount={MOCK_DEPOSIT_COUNTS[idx]} />
+          <DepositCard key={tier.id} tier={tier} depositCount={depositCounts[idx]} onDeposited={refetchCounts} />
         ))}
       </div>
 

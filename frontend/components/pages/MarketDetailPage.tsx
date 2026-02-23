@@ -15,7 +15,7 @@ import { CATEGORY_ICONS } from "~~/lib/constants";
 
 export default function MarketDetailPage({ id }: { id: string }) {
   const marketId = parseInt(id);
-  const { market, loading } = useMarket(marketId);
+  const { market, loading, contractDeployed } = useMarket(marketId);
 
   const handleShare = () => {
     const url = `${window.location.origin}/market/${marketId}`;
@@ -166,10 +166,43 @@ export default function MarketDetailPage({ id }: { id: string }) {
 
         {/* Right sidebar - action panels */}
         <div className="space-y-6">
-          {market.status === "Open" && <BetPanel marketId={market.id} poolTier={market.poolTier} />}
-          {market.status === "Revealing" && <RevealPanel marketId={market.id} />}
-          {market.status === "Resolved" && <ClaimPanel marketId={market.id} outcome="No" />}
-          {market.status === "Cancelled" && <RefundPanel marketId={market.id} />}
+          {/* Contract deployment status */}
+          {contractDeployed === false && (
+            <div
+              className="shroud-card p-5"
+              style={{ borderColor: "#d29922" }}
+            >
+              <div className="flex items-start gap-3">
+                <svg className="w-5 h-5 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="#d29922" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                </svg>
+                <div>
+                  <h4 className="text-sm font-semibold mb-1" style={{ color: "#d29922" }}>
+                    Betting Unavailable
+                  </h4>
+                  <p className="text-xs leading-relaxed" style={{ color: "#8b949e" }}>
+                    This market was created via the factory MVP which stores market data in-contract only.
+                    A separate Market contract must be deployed before betting, revealing, or claiming is possible.
+                    Market metadata (question, deadlines, tier) is available now.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Only show action panels when contract is deployed */}
+          {contractDeployed !== false && market.status === "Open" && (
+            <BetPanel marketId={market.id} poolTier={market.poolTier} />
+          )}
+          {contractDeployed !== false && market.status === "Revealing" && (
+            <RevealPanel marketId={market.id} />
+          )}
+          {contractDeployed !== false && market.status === "Resolved" && (
+            <ClaimPanel marketId={market.id} outcome={market.outcome ?? "Unknown"} />
+          )}
+          {contractDeployed !== false && market.status === "Cancelled" && (
+            <RefundPanel marketId={market.id} />
+          )}
           {(market.status === "Resolving" || market.status === "Disputed") && (
             <div className="shroud-card p-6">
               <h3 className="text-lg font-semibold mb-3" style={{ color: "#e6edf3" }}>
