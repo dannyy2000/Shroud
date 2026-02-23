@@ -5,10 +5,11 @@ import Link from "next/link";
 import { useAccount } from "@starknet-react/core";
 import { CallData, hash } from "starknet";
 import toast from "react-hot-toast";
-import { useSecretNotes, type SecretNote } from "~~/hooks/useSecretNotes";
+import { useSecretNotes } from "~~/hooks/useSecretNotes";
 import { getMarketAddress } from "~~/lib/contracts";
 import { generateRandomFelt } from "~~/lib/utils";
 import { POOL_TIERS } from "~~/lib/constants";
+import { generateMembershipProof } from "~~/lib/zkProof";
 
 interface BetPanelProps {
   marketId: number;
@@ -59,7 +60,8 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
   const [selectedOutcome, setSelectedOutcome] = useState<"yes" | "no" | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState<"idle" | "signing" | "confirming">("idle");
+  const [step, setStep] = useState<"idle" | "proving" | "signing" | "confirming">("idle");
+  const [proofStatus, setProofStatus] = useState("");
 
   const tierInfo = POOL_TIERS[poolTier];
   const availableNotes = unusedNotes.filter((n) => n.tier === poolTier);
@@ -88,30 +90,46 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
     }
 
     setSubmitting(true);
-    setStep("signing");
+    setStep("proving");
+    setProofStatus("");
 
     try {
       // 1. Get deployed market address
       const marketAddress = await getMarketAddress(marketId);
 
       // 2. Generate nonce and compute bet commitment
-      //    commitment = poseidon(outcome_felt, nonce)
-      //    This hides the bet direction from the public
+      //    commitment = poseidon(outcome_felt, nonce) — hides bet direction
       const nonce = generateRandomFelt();
       const outcomeFelt = outcomeToFelt(selectedOutcome);
       const betCommitment = hash.computePoseidonHashOnElements([outcomeFelt, nonce]);
 
-      // 3. Submit place_bet transaction
-      //    zk_proof: ZK membership proof — proves this note is in the Merkle tree.
-      //    Full ZK proof generation (Noir/Garaga) is not yet integrated; the
-      //    transaction will fail at verification until it is.
+      // 3. Generate ZK membership proof (Noir/Garaga)
+      //    Proves this deposit note is in the anonymity pool Merkle tree.
+      let zkProofCalldata: string[] = [];
+      try {
+        zkProofCalldata = await generateMembershipProof(
+          selectedNote,
+          betCommitment,
+          marketId.toString(),
+          (msg) => setProofStatus(msg),
+        );
+      } catch (proofErr: any) {
+        // Proof generation failed — likely hash mismatch (Poseidon2 vs Starknet Poseidon).
+        // The transaction will be sent with an empty proof and fail on-chain verification.
+        // See frontend/lib/zkProof.ts for the full explanation.
+        console.warn("ZK proof generation failed:", proofErr?.message ?? proofErr);
+        setProofStatus("Proof generation failed — submitting without proof (will fail on-chain)");
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+
+      // 4. Submit place_bet transaction
       setStep("signing");
       const tx = await account.execute([
         {
           contractAddress: marketAddress,
           entrypoint: "place_bet",
           calldata: CallData.compile({
-            zk_proof: [],
+            zk_proof: zkProofCalldata,
             bet_commitment: betCommitment,
             nullifier: selectedNote.nullifier,
           }),
@@ -130,7 +148,7 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
       await provider.waitForTransaction(tx.transaction_hash);
       toast.dismiss("bet-tx");
 
-      // 4. Save bet record for reveal phase
+      // 5. Save bet record for reveal phase
       const betRecord: StoredBet = {
         marketId,
         marketAddress,
@@ -160,7 +178,7 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
         msg.includes("reverted") ||
         msg.includes("verify")
       ) {
-        toast.error("On-chain verification failed — ZK proof generation not yet integrated. Your note is still valid.", { duration: 6000 });
+        toast.error("On-chain ZK verification failed — proof generated but hash mismatch (Poseidon2 vs Starknet Poseidon). Your note is still valid.", { duration: 8000 });
       } else {
         toast.error("Bet failed: " + msg.slice(0, 120));
       }
@@ -176,14 +194,6 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
       <h3 className="text-lg font-semibold" style={{ color: "#e6edf3" }}>
         Place Your Bet
       </h3>
-
-      {/* ZK integration notice */}
-      <div
-        className="p-3 rounded-lg text-xs"
-        style={{ backgroundColor: "rgba(210, 153, 34, 0.1)", border: "1px solid #d29922", color: "#d29922" }}
-      >
-        <strong>Preview:</strong> Betting requires a ZK membership proof (Noir/Garaga) that is not yet generated client-side. The transaction will fail at on-chain verification — your deposit note stays valid and is not consumed.
-      </div>
 
       {/* How it works */}
       <div
@@ -302,7 +312,11 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
         <div className="flex items-center gap-2 text-xs">
           <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: "#58a6ff" }} />
           <span style={{ color: "#58a6ff" }}>
-            {step === "signing" ? "Sign transaction in wallet..." : "Confirming on-chain..."}
+            {step === "proving"
+              ? proofStatus || "Generating ZK proof…"
+              : step === "signing"
+                ? "Sign transaction in wallet…"
+                : "Confirming on-chain…"}
           </span>
         </div>
       )}
@@ -325,7 +339,9 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
         {submitting
           ? step === "confirming"
             ? "Confirming..."
-            : "Signing..."
+            : step === "proving"
+              ? "Generating Proof..."
+              : "Signing..."
           : status !== "connected"
             ? "Connect Wallet"
             : !selectedNote

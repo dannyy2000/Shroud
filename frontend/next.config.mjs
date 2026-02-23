@@ -36,6 +36,19 @@ const nextConfig = {
       }),
     );
 
+    // Enable async WebAssembly and top-level await for Barretenberg (@aztec/bb.js) and Garaga
+    config.experiments = {
+      ...config.experiments,
+      asyncWebAssembly: true,
+      topLevelAwait: true,
+    };
+
+    // Prevent WASM modules from being processed by default loaders
+    config.module.rules.push({
+      test: /\.wasm$/,
+      type: "asset/resource",
+    });
+
     if (dev && !isServer) {
       config.infrastructureLogging = {
         level: "error",
@@ -43,6 +56,18 @@ const nextConfig = {
     }
 
     return config;
+  },
+  // Required for SharedArrayBuffer (used by Barretenberg parallel prover)
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+        ],
+      },
+    ];
   },
 };
 
