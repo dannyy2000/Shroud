@@ -1,19 +1,21 @@
 /// MarketFactory — Creates and indexes Shroud prediction markets.
 ///
-/// Each market is a separate contract instance deployed by this factory.
-/// For the hackathon MVP, markets are stored in-contract rather than
-/// deploying separate contracts (simpler, same functionality).
+/// Each market is a separate contract instance deployed via deploy_syscall.
+/// The Market class hash must be declared on-chain before calling create_market.
 
 #[starknet::contract]
 pub mod MarketFactory {
     use starknet::{
-        ContractAddress, get_caller_address, get_block_timestamp, get_contract_address,
+        ContractAddress, ClassHash, get_caller_address, get_block_timestamp, get_contract_address,
         storage::{
             Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
             StoragePointerWriteAccess,
         },
+        syscalls::deploy_syscall,
     };
-    use shroud::interfaces::{IMarketFactory, ResolutionSource, PoolTier};
+    use shroud::interfaces::{IMarketFactory, ResolutionSource, PoolTier, MarketConfig};
+
+    const DISPUTE_WINDOW: u64 = 172800; // 48 hours
 
     /// Stored market metadata
     #[derive(Drop, Copy, Serde, starknet::Store)]
@@ -31,6 +33,10 @@ pub mod MarketFactory {
         deposit_pool: ContractAddress,
         strk_token: ContractAddress,
         market_class_hash: felt252,
+        membership_verifier: ContractAddress,
+        claim_verifier: ContractAddress,
+        pragma_oracle: ContractAddress,
+        protocol_fee_recipient: ContractAddress,
         market_count: u64,
         markets: Map<u64, MarketInfo>,
         // Store questions separately (ByteArray can't be in struct with starknet::Store)
@@ -46,6 +52,7 @@ pub mod MarketFactory {
     #[derive(Drop, starknet::Event)]
     pub struct MarketCreated {
         pub market_id: u64,
+        pub market_address: ContractAddress,
         pub creator: ContractAddress,
         pub question: ByteArray,
         pub bet_deadline: u64,
@@ -62,10 +69,20 @@ pub mod MarketFactory {
         owner: ContractAddress,
         deposit_pool: ContractAddress,
         strk_token: ContractAddress,
+        market_class_hash: felt252,
+        membership_verifier: ContractAddress,
+        claim_verifier: ContractAddress,
+        pragma_oracle: ContractAddress,
+        protocol_fee_recipient: ContractAddress,
     ) {
         self.owner.write(owner);
         self.deposit_pool.write(deposit_pool);
         self.strk_token.write(strk_token);
+        self.market_class_hash.write(market_class_hash);
+        self.membership_verifier.write(membership_verifier);
+        self.claim_verifier.write(claim_verifier);
+        self.pragma_oracle.write(pragma_oracle);
+        self.protocol_fee_recipient.write(protocol_fee_recipient);
         self.market_count.write(0);
     }
 
@@ -100,13 +117,46 @@ pub mod MarketFactory {
                 self._transfer_in(caller, creator_stake);
             }
 
-            // Create market ID
             let market_id = self.market_count.read();
+            let dispute_deadline = reveal_deadline + DISPUTE_WINDOW;
 
-            // For MVP: store market data in factory rather than deploying separate contracts.
-            // In production, each market would be a separate deployed contract.
+            let config = MarketConfig {
+                creator: caller,
+                bet_deadline,
+                reveal_deadline,
+                dispute_deadline,
+                resolution_source,
+                pool_tier,
+                pragma_pair_id,
+                target_price,
+                creator_stake,
+                min_bets,
+            };
+
+            // Serialize Market constructor calldata:
+            // (config, question, deposit_pool, membership_verifier, claim_verifier,
+            //  market_id, strk_token, protocol_fee_recipient, pragma_oracle)
+            let mut calldata: Array<felt252> = array![];
+            config.serialize(ref calldata);
+            question.serialize(ref calldata);
+            self.deposit_pool.read().serialize(ref calldata);
+            self.membership_verifier.read().serialize(ref calldata);
+            self.claim_verifier.read().serialize(ref calldata);
+            let market_id_felt: felt252 = market_id.into();
+            market_id_felt.serialize(ref calldata);
+            self.strk_token.read().serialize(ref calldata);
+            self.protocol_fee_recipient.read().serialize(ref calldata);
+            self.pragma_oracle.read().serialize(ref calldata);
+
+            // Deploy the Market contract
+            let class_hash: ClassHash = self.market_class_hash.read().try_into().unwrap();
+            let (market_address, _) = deploy_syscall(
+                class_hash, market_id_felt, calldata.span(), false,
+            )
+                .unwrap();
+
             let market_info = MarketInfo {
-                market_address: 0.try_into().unwrap(), // MVP: not deployed separately
+                market_address,
                 creator: caller,
                 pool_tier,
                 created_at: now,
@@ -121,6 +171,7 @@ pub mod MarketFactory {
                 .emit(
                     MarketCreated {
                         market_id,
+                        market_address,
                         creator: caller,
                         question,
                         bet_deadline,

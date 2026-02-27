@@ -286,28 +286,63 @@ export const CreateMarketForm = () => {
       </div>
 
       {/* Deadlines */}
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-xs mb-1.5" style={{ color: "#8b949e" }}>
-            Bet Deadline
-          </label>
-          <input
-            type="datetime-local"
-            value={betDeadlineDate}
-            onChange={(e) => setBetDeadlineDate(e.target.value)}
-            className="shroud-input w-full text-sm"
-          />
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium" style={{ color: "#e6edf3" }}>Deadlines</span>
+          <div className="flex gap-2">
+            {[
+              { label: "10 / 20 min", bet: 10, reveal: 20 },
+              { label: "1 / 2 hr", bet: 60, reveal: 120 },
+              { label: "1 / 2 day", bet: 1440, reveal: 2880 },
+            ].map(({ label, bet, reveal }) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => {
+                  const toLocal = (offsetMin: number) => {
+                    const d = new Date(Date.now() + offsetMin * 60_000);
+                    // Subtract timezone offset so the resulting ISO string
+                    // represents local time (datetime-local inputs expect local time)
+                    const local = new Date(d.getTime() - d.getTimezoneOffset() * 60_000);
+                    return local.toISOString().slice(0, 16);
+                  };
+                  setBetDeadlineDate(toLocal(bet));
+                  setRevealDeadlineDate(toLocal(reveal));
+                }}
+                className="px-2 py-1 rounded text-xs transition-colors"
+                style={{ backgroundColor: "#161b22", border: "1px solid #30363d", color: "#58a6ff" }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div>
-          <label className="block text-xs mb-1.5" style={{ color: "#8b949e" }}>
-            Reveal Deadline
-          </label>
-          <input
-            type="datetime-local"
-            value={revealDeadlineDate}
-            onChange={(e) => setRevealDeadlineDate(e.target.value)}
-            className="shroud-input w-full text-sm"
-          />
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: "#8b949e" }}>
+              Bet Deadline
+            </label>
+            <input
+              type="datetime-local"
+              value={betDeadlineDate}
+              onChange={(e) => setBetDeadlineDate(e.target.value)}
+              className="shroud-input w-full text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs mb-1.5" style={{ color: "#8b949e" }}>
+              Reveal Deadline
+            </label>
+            <input
+              type="datetime-local"
+              value={revealDeadlineDate}
+              onChange={(e) => setRevealDeadlineDate(e.target.value)}
+              className="shroud-input w-full text-sm"
+            />
+            <p className="text-xs mt-1" style={{ color: "#30363d" }}>
+              Must be after the bet deadline
+            </p>
+          </div>
         </div>
       </div>
 

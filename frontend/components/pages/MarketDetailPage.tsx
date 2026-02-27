@@ -1,7 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import toast from "react-hot-toast";
+import { useAccount } from "@starknet-react/core";
+import { CallData } from "starknet";
 import { useMarket } from "~~/hooks/useMarket";
 import { StatusBadge } from "~~/components/StatusBadge";
 import { CountdownTimer } from "~~/components/CountdownTimer";
@@ -12,10 +15,66 @@ import { ClaimPanel } from "~~/components/ClaimPanel";
 import { RefundPanel } from "~~/components/RefundPanel";
 import { getTierLabel, timestampToDate } from "~~/lib/utils";
 import { CATEGORY_ICONS } from "~~/lib/constants";
+import { getMarketAddress } from "~~/lib/contracts";
+
+/**
+ * Derive the market status from timestamps when the stored on-chain status is
+ * stale (it only updates inside mutating txs via _update_status()).
+ */
+function getEffectiveStatus(
+  storedStatus: string,
+  betDeadline: number,
+  revealDeadline: number,
+): string {
+  if (storedStatus !== "Open" && storedStatus !== "Revealing") return storedStatus;
+  const now = Math.floor(Date.now() / 1000);
+  if (storedStatus === "Open" && betDeadline > 0 && now > betDeadline) {
+    if (revealDeadline > 0 && now > revealDeadline) return "Resolving";
+    return "Revealing";
+  }
+  if (storedStatus === "Revealing" && revealDeadline > 0 && now > revealDeadline) {
+    return "Resolving";
+  }
+  return storedStatus;
+}
 
 export default function MarketDetailPage({ id }: { id: string }) {
   const marketId = parseInt(id);
   const { market, loading, contractDeployed } = useMarket(marketId);
+  const { account, address, status: walletStatus } = useAccount();
+  const [resolving, setResolving] = useState(false);
+  const [resolveOutcome, setResolveOutcome] = useState<"yes" | "no" | null>(null);
+
+  const handleResolve = async () => {
+    if (!account || walletStatus !== "connected") { toast.error("Connect wallet"); return; }
+    if (!resolveOutcome) { toast.error("Select an outcome"); return; }
+    setResolving(true);
+    try {
+      const marketAddress = await getMarketAddress(marketId);
+      const { CairoCustomEnum } = await import("starknet");
+      const outcomeEnum = new CairoCustomEnum({
+        Pending: undefined,
+        Yes: resolveOutcome === "yes" ? {} : undefined,
+        No: resolveOutcome === "no" ? {} : undefined,
+      });
+      const tx = await account.execute([{
+        contractAddress: marketAddress,
+        entrypoint: "resolve",
+        calldata: CallData.compile({ outcome: outcomeEnum }),
+      }]);
+      toast.loading("Confirming resolution...", { id: "resolve-tx" });
+      const { RpcProvider } = await import("starknet");
+      const provider = new RpcProvider({ nodeUrl: process.env.NEXT_PUBLIC_SEPOLIA_PROVIDER_URL || "https://starknet-sepolia-rpc.publicnode.com" });
+      await provider.waitForTransaction(tx.transaction_hash);
+      toast.dismiss("resolve-tx");
+      toast.success("Market resolved!");
+    } catch (err: any) {
+      toast.dismiss("resolve-tx");
+      toast.error("Resolve failed: " + (err?.message ?? String(err)).slice(0, 120));
+    } finally {
+      setResolving(false);
+    }
+  };
 
   const handleShare = () => {
     const url = `${window.location.origin}/market/${marketId}`;
@@ -54,6 +113,7 @@ export default function MarketDetailPage({ id }: { id: string }) {
   const categoryIcon = CATEGORY_ICONS[market.category || ""] || "🔮";
   const anonymityLevel = market.totalBets >= 50 ? "Strong" : market.totalBets >= 20 ? "Moderate" : "Growing";
   const anonymityColor = market.totalBets >= 50 ? "#3fb950" : market.totalBets >= 20 ? "#d29922" : "#8b949e";
+  const effectiveStatus = getEffectiveStatus(market.status, market.betDeadline, market.revealDeadline);
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 animate-fadeIn">
@@ -90,7 +150,7 @@ export default function MarketDetailPage({ id }: { id: string }) {
                 >
                   {categoryIcon}
                 </span>
-                <StatusBadge status={market.status} />
+                <StatusBadge status={effectiveStatus} />
                 {market.category && (
                   <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: "#30363d", color: "#8b949e" }}>{market.category}</span>
                 )}
@@ -133,7 +193,7 @@ export default function MarketDetailPage({ id }: { id: string }) {
               yesCount={market.yesCount}
               noCount={market.noCount}
               poolBalance={market.poolBalance}
-              hideVotes={market.status === "Open"}
+              hideVotes={effectiveStatus === "Open"}
             />
           </div>
 
@@ -191,28 +251,57 @@ export default function MarketDetailPage({ id }: { id: string }) {
           )}
 
           {/* Only show action panels when contract is deployed */}
-          {contractDeployed !== false && market.status === "Open" && (
+          {contractDeployed !== false && effectiveStatus === "Open" && (
             <BetPanel marketId={market.id} poolTier={market.poolTier} />
           )}
-          {contractDeployed !== false && market.status === "Revealing" && (
+          {contractDeployed !== false && effectiveStatus === "Revealing" && (
             <RevealPanel marketId={market.id} />
           )}
-          {contractDeployed !== false && market.status === "Resolved" && (
+          {contractDeployed !== false && effectiveStatus === "Resolved" && (
             <ClaimPanel marketId={market.id} outcome={market.outcome ?? "Unknown"} />
           )}
-          {contractDeployed !== false && market.status === "Cancelled" && (
+          {contractDeployed !== false && effectiveStatus === "Cancelled" && (
             <RefundPanel marketId={market.id} />
           )}
-          {(market.status === "Resolving" || market.status === "Disputed") && (
-            <div className="shroud-card p-6">
-              <h3 className="text-lg font-semibold mb-3" style={{ color: "#e6edf3" }}>
-                {market.status === "Resolving" ? "Awaiting Resolution" : "Dispute in Progress"}
+          {(effectiveStatus === "Resolving" || effectiveStatus === "Disputed") && (
+            <div className="shroud-card p-6 space-y-4">
+              <h3 className="text-lg font-semibold" style={{ color: "#e6edf3" }}>
+                {effectiveStatus === "Resolving" ? "Resolve Market" : "Dispute in Progress"}
               </h3>
-              <p className="text-sm" style={{ color: "#8b949e" }}>
-                {market.status === "Resolving"
-                  ? "This market is being resolved. The outcome will be determined shortly."
-                  : "This market's resolution has been disputed. Awaiting final outcome."}
-              </p>
+              {effectiveStatus === "Resolving" ? (
+                <>
+                  <p className="text-xs" style={{ color: "#8b949e" }}>
+                    The reveal window has closed. As market creator, pick the winning outcome to resolve.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {(["yes", "no"] as const).map((side) => (
+                      <button
+                        key={side}
+                        onClick={() => setResolveOutcome(side)}
+                        className="py-3 rounded-xl font-bold text-sm transition-all"
+                        style={{
+                          backgroundColor: resolveOutcome === side ? (side === "yes" ? "#3fb950" : "#f85149") : "#161b22",
+                          color: resolveOutcome === side ? "#0d1117" : (side === "yes" ? "#3fb950" : "#f85149"),
+                          border: `2px solid ${resolveOutcome === side ? (side === "yes" ? "#3fb950" : "#f85149") : "#30363d"}`,
+                        }}
+                      >
+                        {side.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={handleResolve}
+                    disabled={!resolveOutcome || resolving || walletStatus !== "connected"}
+                    className="w-full py-3 rounded-xl font-semibold text-sm shroud-btn-primary transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {resolving ? "Resolving..." : resolveOutcome ? `Resolve as ${resolveOutcome.toUpperCase()}` : "Select outcome above"}
+                  </button>
+                </>
+              ) : (
+                <p className="text-sm" style={{ color: "#8b949e" }}>
+                  This market&apos;s resolution has been disputed. Awaiting final outcome.
+                </p>
+              )}
             </div>
           )}
         </div>

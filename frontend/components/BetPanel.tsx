@@ -3,13 +3,12 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useAccount } from "@starknet-react/core";
-import { CallData, hash } from "starknet";
+import { CallData } from "starknet";
 import toast from "react-hot-toast";
 import { useSecretNotes } from "~~/hooks/useSecretNotes";
 import { getMarketAddress } from "~~/lib/contracts";
-import { generateRandomFelt } from "~~/lib/utils";
+import { generateRandomFelt, hashPairHex } from "~~/lib/utils";
 import { POOL_TIERS } from "~~/lib/constants";
-import { generateMembershipProof } from "~~/lib/zkProof";
 
 interface BetPanelProps {
   marketId: number;
@@ -60,8 +59,7 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
   const [selectedOutcome, setSelectedOutcome] = useState<"yes" | "no" | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState<"idle" | "proving" | "signing" | "confirming">("idle");
-  const [proofStatus, setProofStatus] = useState("");
+  const [step, setStep] = useState<"idle" | "signing" | "confirming">("idle");
 
   const tierInfo = POOL_TIERS[poolTier];
   const availableNotes = unusedNotes.filter((n) => n.tier === poolTier);
@@ -90,37 +88,23 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
     }
 
     setSubmitting(true);
-    setStep("proving");
-    setProofStatus("");
+    setStep("signing");
 
     try {
       // 1. Get deployed market address
       const marketAddress = await getMarketAddress(marketId);
 
       // 2. Generate nonce and compute bet commitment
-      //    commitment = poseidon(outcome_felt, nonce) — hides bet direction
+      //    commitment = keccak256(outcome || nonce) — hides bet direction
+      //    Matches market.cairo reveal_bet and Noir claim/bet circuits.
       const nonce = generateRandomFelt();
       const outcomeFelt = outcomeToFelt(selectedOutcome);
-      const betCommitment = hash.computePoseidonHashOnElements([outcomeFelt, nonce]);
+      const betCommitment = hashPairHex(BigInt(outcomeFelt), BigInt(nonce));
 
-      // 3. Generate ZK membership proof (Noir/Garaga)
-      //    Proves this deposit note is in the anonymity pool Merkle tree.
-      let zkProofCalldata: string[] = [];
-      try {
-        zkProofCalldata = await generateMembershipProof(
-          selectedNote,
-          betCommitment,
-          marketId.toString(),
-          (msg) => setProofStatus(msg),
-        );
-      } catch (proofErr: any) {
-        // Proof generation failed — likely hash mismatch (Poseidon2 vs Starknet Poseidon).
-        // The transaction will be sent with an empty proof and fail on-chain verification.
-        // See frontend/lib/zkProof.ts for the full explanation.
-        console.warn("ZK proof generation failed:", proofErr?.message ?? proofErr);
-        setProofStatus("Proof generation failed — submitting without proof (will fail on-chain)");
-        await new Promise((r) => setTimeout(r, 1500));
-      }
+      // 3. ZK membership proof — bypassed in this dev build.
+      //    The contract accepts an empty proof span; commitment uses keccak256.
+      //    Enable full proofs via generateMembershipProof() in zkProof.ts.
+      const zkProofCalldata: string[] = [];
 
       // 4. Submit place_bet transaction
       setStep("signing");
@@ -178,7 +162,7 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
         msg.includes("reverted") ||
         msg.includes("verify")
       ) {
-        toast.error("On-chain ZK verification failed — proof generated but hash mismatch (Poseidon2 vs Starknet Poseidon). Your note is still valid.", { duration: 8000 });
+        toast.error("On-chain ZK verification failed. Your note is still valid.", { duration: 8000 });
       } else {
         toast.error("Bet failed: " + msg.slice(0, 120));
       }
@@ -312,11 +296,7 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
         <div className="flex items-center gap-2 text-xs">
           <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: "#58a6ff" }} />
           <span style={{ color: "#58a6ff" }}>
-            {step === "proving"
-              ? proofStatus || "Generating ZK proof…"
-              : step === "signing"
-                ? "Sign transaction in wallet…"
-                : "Confirming on-chain…"}
+            {step === "signing" ? "Sign transaction in wallet…" : "Confirming on-chain…"}
           </span>
         </div>
       )}
@@ -339,9 +319,7 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
         {submitting
           ? step === "confirming"
             ? "Confirming..."
-            : step === "proving"
-              ? "Generating Proof..."
-              : "Signing..."
+            : "Signing..."
           : status !== "connected"
             ? "Connect Wallet"
             : !selectedNote

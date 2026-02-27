@@ -36,9 +36,13 @@ const Wallet = ({
       }
     };
     checkAvailability();
-    // Re-check after a short delay (extensions may inject late)
-    const timer = setTimeout(checkAvailability, 1000);
-    return () => clearTimeout(timer);
+    // Re-check at multiple intervals — extensions may inject late
+    const timers = [
+      setTimeout(checkAvailability, 500),
+      setTimeout(checkAvailability, 1500),
+      setTimeout(checkAvailability, 3000),
+    ];
+    return () => timers.forEach(clearTimeout);
   }, [connector.id]);
 
   if (!isMounted) return null;

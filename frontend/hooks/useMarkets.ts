@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { hash, num } from "starknet";
 import type { MarketData } from "~~/components/MarketCard";
 import { CONTRACTS } from "~~/lib/constants";
-import { getProvider, getMarketFactoryContract } from "~~/lib/contracts";
+import { getProvider, getMarketFactoryContract, getMarketContract } from "~~/lib/contracts";
 
 export type SortOption = "newest" | "most_bets" | "ending_soon";
 
@@ -74,6 +74,10 @@ function parseMarketCreatedEvent(data: string[]): MarketData | null {
     const marketId = Number(BigInt(data[offset]));
     offset++;
 
+    // market_address: ContractAddress (1 felt) — present in new factory events
+    const marketAddress = data[offset] ?? "0x0";
+    offset++;
+
     // creator: ContractAddress (1 felt)
     offset++; // skip creator
 
@@ -123,7 +127,7 @@ function parseMarketCreatedEvent(data: string[]): MarketData | null {
       question,
       status,
       poolTier,
-      totalBets: 0, // Can't know from event alone — no Market contract deployed
+      totalBets: 0,
       yesCount: 0,
       noCount: 0,
       betDeadline,
@@ -131,6 +135,7 @@ function parseMarketCreatedEvent(data: string[]): MarketData | null {
       resolutionSource: RESOLUTION_NAMES[resolutionSource] || "CreatorResolve",
       category: getCategoryForQuestion(question),
       poolBalance: "0 STRK",
+      address: marketAddress !== "0x0" ? marketAddress : undefined,
     };
   } catch (err) {
     console.error("Failed to parse MarketCreated event:", err);
@@ -191,7 +196,30 @@ export function useMarkets() {
         }
       }
 
-      setMarkets(parsed);
+      // Fetch live bet counts for each deployed market contract
+      const withCounts = await Promise.all(
+        parsed.map(async (market) => {
+          if (!market.address) return market;
+          try {
+            const contract = getMarketContract(market.address);
+            const [totalBets, yesCount, noCount] = await Promise.all([
+              contract.get_total_bets(),
+              contract.get_yes_count(),
+              contract.get_no_count(),
+            ]);
+            return {
+              ...market,
+              totalBets: Number(totalBets),
+              yesCount: Number(yesCount),
+              noCount: Number(noCount),
+            };
+          } catch {
+            return market;
+          }
+        }),
+      );
+
+      setMarkets(withCounts);
     } catch (err: any) {
       console.error("Failed to fetch markets:", err);
       setError(err?.message || "Failed to load markets");

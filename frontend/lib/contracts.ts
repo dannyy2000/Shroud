@@ -125,6 +125,7 @@ export const DEPOSIT_POOL_ABI = [
         inputs: [
           { name: "commitment", type: "core::felt252" },
           { name: "tier", type: "shroud::interfaces::PoolTier" },
+          { name: "new_merkle_root", type: "core::felt252" },
         ],
         outputs: [{ type: "core::integer::u32" }],
         state_mutability: "external",
@@ -264,6 +265,7 @@ export const MARKET_FACTORY_ABI = [
     kind: "struct",
     members: [
       { name: "market_id", type: "core::integer::u64", kind: "data" },
+      { name: "market_address", type: "core::starknet::contract_address::ContractAddress", kind: "data" },
       { name: "creator", type: "core::starknet::contract_address::ContractAddress", kind: "data" },
       { name: "question", type: "core::byte_array::ByteArray", kind: "data" },
       { name: "bet_deadline", type: "core::integer::u64", kind: "data" },

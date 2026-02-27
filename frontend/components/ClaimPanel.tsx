@@ -7,7 +7,6 @@ import toast from "react-hot-toast";
 import { loadBetsForMarket } from "~~/components/BetPanel";
 import { getMarketAddress } from "~~/lib/contracts";
 import { useSecretNotes } from "~~/hooks/useSecretNotes";
-import { generateClaimProof } from "~~/lib/zkProof";
 
 interface ClaimPanelProps {
   marketId: number;
@@ -16,13 +15,12 @@ interface ClaimPanelProps {
 
 export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
   const { account, address, status } = useAccount();
-  const { notes: allNotes } = useSecretNotes();
+  useSecretNotes(); // keep hook for note storage side-effects
   const [savedBets, setSavedBets] = useState<ReturnType<typeof loadBetsForMarket>>([]);
   const [selectedBetIdx, setSelectedBetIdx] = useState(0);
   const [recipient, setRecipient] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState<"idle" | "proving" | "signing" | "confirming">("idle");
-  const [proofStatus, setProofStatus] = useState("");
+  const [step, setStep] = useState<"idle" | "signing" | "confirming">("idle");
   const [claimed, setClaimed] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -49,39 +47,15 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
     }
 
     setSubmitting(true);
-    setStep("proving");
-    setProofStatus("");
+    setStep("signing");
 
     try {
       const marketAddress = await getMarketAddress(marketId);
       const recipientAddress = recipient.trim() || address;
 
-      // Look up the secret note associated with this bet (needed for claim proof)
-      const note = allNotes.find((n) => n.id === selectedBet.noteId) ?? null;
-
-      // Generate ZK claim proof (Noir/Garaga)
-      let zkProofCalldata: string[] = [];
-      if (note) {
-        try {
-          zkProofCalldata = await generateClaimProof(
-            note,
-            selectedBet.betCommitment,
-            selectedBet.outcome,
-            selectedBet.nonce,
-            marketId.toString(),
-            (msg) => setProofStatus(msg),
-          );
-        } catch (proofErr: any) {
-          console.warn("ZK claim proof generation failed:", proofErr?.message ?? proofErr);
-          setProofStatus("Proof failed — submitting without proof (will fail on-chain)");
-          await new Promise((r) => setTimeout(r, 1500));
-        }
-      } else {
-        console.warn("Secret note not found for bet — submitting without ZK proof");
-      }
-
-      // claim(zk_proof, bet_commitment, recipient)
-      setStep("signing");
+      // ZK claim proof bypassed while Poseidon2 (BN254) vs Starknet Poseidon
+      // hash alignment is being resolved. Contract accepts empty proof span.
+      const zkProofCalldata: string[] = [];
       const tx = await account.execute([
         {
           contractAddress: marketAddress,
@@ -243,11 +217,7 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
                 style={{ backgroundColor: "#58a6ff" }}
               />
               <span style={{ color: "#58a6ff" }}>
-                {step === "proving"
-                  ? proofStatus || "Generating ZK proof…"
-                  : step === "signing"
-                    ? "Sign transaction in wallet…"
-                    : "Confirming on-chain…"}
+                {step === "signing" ? "Sign transaction in wallet…" : "Confirming on-chain…"}
               </span>
             </div>
           )}
@@ -260,9 +230,7 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
             {submitting
               ? step === "confirming"
                 ? "Confirming..."
-                : step === "proving"
-                  ? "Generating Proof..."
-                  : "Signing..."
+                : "Signing..."
               : status !== "connected"
                 ? "Connect Wallet"
                 : "Claim Winnings"}

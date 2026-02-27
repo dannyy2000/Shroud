@@ -4,11 +4,12 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAccount } from "@starknet-react/core";
-import { CallData, cairo, hash } from "starknet";
+import { CallData, cairo } from "starknet";
 import toast from "react-hot-toast";
 import { POOL_TIERS, CONTRACTS } from "~~/lib/constants";
-import { generateRandomFelt } from "~~/lib/utils";
+import { generateRandomFelt, hashPairHex } from "~~/lib/utils";
 import { useSecretNotes, type SecretNote } from "~~/hooks/useSecretNotes";
+import { fetchLeavesForTier, computeNewMerkleRoot } from "~~/lib/zkProof";
 
 interface DepositCardProps {
   tier: (typeof POOL_TIERS)[number];
@@ -21,7 +22,7 @@ export const DepositCard = ({ tier, depositCount, onDeposited }: DepositCardProp
   const { addNote } = useSecretNotes();
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState<"idle" | "approving" | "depositing" | "done">("idle");
+  const [step, setStep] = useState<"idle" | "computing-root" | "approving" | "depositing" | "done">("idle");
   const [lastNoteId, setLastNoteId] = useState<string | null>(null);
 
   const handleDeposit = async () => {
@@ -37,8 +38,14 @@ export const DepositCard = ({ tier, depositCount, onDeposited }: DepositCardProp
       // Generate secret + nullifier client-side
       const secret = generateRandomFelt();
       const nullifier = generateRandomFelt();
-      // commitment = poseidon(secret, nullifier) — matches the ZK circuit's public input
-      const commitment = hash.computePoseidonHashOnElements([secret, nullifier]);
+      // commitment = keccak256(secret || nullifier) — matches ZK circuit and deposit_pool.cairo
+      const commitment = hashPairHex(BigInt(secret), BigInt(nullifier));
+
+      // Compute the new Poseidon2-BN254 Merkle root after adding this leaf
+      setStep("computing-root");
+      const existingLeaves = await fetchLeavesForTier(tier.id);
+      const newRootBigInt = await computeNewMerkleRoot(existingLeaves, BigInt(commitment));
+      const newMerkleRoot = "0x" + newRootBigInt.toString(16);
 
       // Multicall: approve STRK + deposit in one transaction
       setStep("depositing");
@@ -57,6 +64,7 @@ export const DepositCard = ({ tier, depositCount, onDeposited }: DepositCardProp
           calldata: CallData.compile({
             commitment,
             tier: tier.id, // enum variant index: 0=Small, 1=Medium, 2=Large
+            new_merkle_root: newMerkleRoot,
           }),
         },
       ]);
@@ -161,7 +169,11 @@ export const DepositCard = ({ tier, depositCount, onDeposited }: DepositCardProp
             style={{ backgroundColor: "#58a6ff" }}
           />
           <span style={{ color: "#58a6ff" }}>
-            {step === "approving" ? "Approving STRK..." : "Depositing..."}
+            {step === "computing-root"
+              ? "Computing Merkle root…"
+              : step === "approving"
+                ? "Approving STRK..."
+                : "Depositing..."}
           </span>
         </div>
       )}

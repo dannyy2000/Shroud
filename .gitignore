@@ -32,3 +32,10 @@ node_modules/
 # IDE
 .vscode/
 .idea/
+
+# Shroud Secrets
+.secrets
+
+# Build Artifacts
+target/
+frontend/tsconfig.tsbuildinfo

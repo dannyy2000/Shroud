@@ -62,9 +62,10 @@ pub struct MarketConfig {
 #[starknet::interface]
 pub trait IDepositPool<TContractState> {
     /// Deposit a fixed amount into the anonymity pool.
-    /// `commitment` = poseidon_hash(secret, nullifier) — computed client-side.
+    /// `commitment` = keccak256(secret, nullifier) — computed client-side.
+    /// `new_merkle_root` = Poseidon2-BN254 Merkle root after adding this leaf — computed client-side.
     /// Returns the leaf index in the Merkle tree.
-    fn deposit(ref self: TContractState, commitment: felt252, tier: PoolTier) -> u32;
+    fn deposit(ref self: TContractState, commitment: felt252, tier: PoolTier, new_merkle_root: felt252) -> u32;
 
     /// Get the current Merkle root for a pool tier
     fn get_merkle_root(self: @TContractState, tier: PoolTier) -> felt252;

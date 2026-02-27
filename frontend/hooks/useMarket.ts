@@ -91,6 +91,10 @@ export function useMarket(id: number) {
     };
 
     fetchLive();
+
+    // Poll every 15 s so status transitions become visible without a manual refresh
+    const interval = setInterval(fetchLive, 15_000);
+    return () => clearInterval(interval);
   }, [id, markets, marketsLoading]);
 
   return { market, loading, contractDeployed };

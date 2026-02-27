@@ -1,0 +1,6 @@
+[workspace]
+members = [
+  "circuits/membership_proof",
+  "circuits/claim_proof",
+  "circuits/bet_proof",
+]
