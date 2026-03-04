@@ -203,15 +203,26 @@ pub mod Market {
             //   3. The Merkle root matches the current pool state
             self._verify_membership_proof(zk_proof, bet_commitment, nullifier);
 
-            // Mark nullifier as used in the deposit pool (prevents double-betting).
-            // Skipped in bypass mode (empty proof) because the market contract is
-            // not yet authorized in the DepositPool allowlist when deployed via factory.
-            // Bet commitment uniqueness (above) prevents replay in this mode.
+            // Fund the market and prevent double-spending.
             if zk_proof.len() > 0 {
+                // Full ZK mode: mark nullifier used in pool (pool holds the STRK).
+                // NOTE: full anonymity requires the DepositPool to also transfer the
+                // tier amount here — tracked as a future improvement once ZK is live.
                 let pool = IDepositPoolDispatcher {
                     contract_address: self.deposit_pool.read(),
                 };
                 pool.use_nullifier(nullifier);
+            } else {
+                // Bypass mode (dev / no ZK proof): pull STRK directly from the caller.
+                // This links the caller to the bet commitment, but is acceptable for
+                // testing. Caller must have approved this contract for the tier amount.
+                let config = self.config.read();
+                let tier_amount: u256 = match config.pool_tier {
+                    PoolTier::Small => 10_000_000_000_000_000_000_u256,
+                    PoolTier::Medium => 100_000_000_000_000_000_000_u256,
+                    PoolTier::Large => 1_000_000_000_000_000_000_000_u256,
+                };
+                self._transfer_in_from(starknet::get_caller_address(), tier_amount);
             }
 
             // Store the bet
@@ -383,13 +394,16 @@ pub mod Market {
             // Calculate payout (after 2% protocol fee)
             let (payout, fee) = self._calculate_payout();
 
-            // Transfer protocol fee to fee recipient
-            if fee > 0 {
-                self._transfer_out(self.protocol_fee_recipient.read(), fee);
+            // Transfer protocol fee to fee recipient (skip if zero address — dev mode)
+            let fee_recipient = self.protocol_fee_recipient.read();
+            if fee > 0 && !fee_recipient.is_zero() {
+                self._transfer_out(fee_recipient, fee);
             }
 
             // Transfer winnings to recipient (any address — can be fresh wallet)
-            self._transfer_out(recipient, payout);
+            // If fee_recipient is zero, include the fee so no STRK is stranded
+            let actual_payout = if fee_recipient.is_zero() { payout + fee } else { payout };
+            self._transfer_out(recipient, actual_payout);
 
             self.emit(WinningsClaimed { bet_commitment, recipient });
         }
@@ -716,6 +730,24 @@ pub mod Market {
             (net_payout, fee_per_winner)
         }
 
+        /// Transfer STRK tokens from `from` into this contract (requires prior approval)
+        fn _transfer_in_from(ref self: ContractState, from: ContractAddress, amount: u256) {
+            let strk = self.strk_token.read();
+
+            let mut calldata: Array<felt252> = array![];
+            from.serialize(ref calldata);
+            starknet::get_contract_address().serialize(ref calldata);
+            amount.serialize(ref calldata);
+
+            let mut result = starknet::syscalls::call_contract_syscall(
+                strk, selector!("transferFrom"), calldata.span(),
+            )
+                .unwrap();
+
+            let success = Serde::<bool>::deserialize(ref result).unwrap();
+            assert(success, 'STRK transfer failed');
+        }
+
         /// Transfer STRK tokens from this contract to recipient
         fn _transfer_out(ref self: ContractState, to: ContractAddress, amount: u256) {
             let strk = self.strk_token.read();
@@ -735,15 +767,27 @@ pub mod Market {
     }
 
     // -- Pure helpers --
+
+    /// keccak256(left || right) where left and right are 32-byte big-endian field elements.
+    /// Result truncated to 248 bits to fit Stark252 prime.
+    /// Matches JavaScript: BigInt(ethers.keccak256(pad32(left) + pad32(right))) & ((1n<<248n)-1n)
+    ///
+    /// Why the byte-reverse: Cairo's keccak returns a LE u256
+    ///   (h.low = first 16 output bytes as LE u128, h.high = last 16 bytes as LE u128).
+    /// JS BigInt treats the output as big-endian, so we reverse each u128 half.
     fn hash_pair(left: felt252, right: felt252) -> felt252 {
         let left_u256: u256 = left.into();
         let right_u256: u256 = right.into();
         let inputs = array![left_u256, right_u256].span();
         let h: u256 = core::keccak::keccak_u256s_be_inputs(inputs);
+        let be: u256 = u256 {
+            high: core::integer::u128_byte_reverse(h.low),
+            low: core::integer::u128_byte_reverse(h.high),
+        };
         // Truncate to 248 bits (drop top byte) -- safe for Stark252 prime
         let truncated: u256 = u256 {
-            high: h.high & 0x00ffffffffffffffffffffffffffffff_u128,
-            low: h.low,
+            high: be.high & 0x00ffffffffffffffffffffffffffffff_u128,
+            low: be.low,
         };
         truncated.try_into().unwrap()
     }

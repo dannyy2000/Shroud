@@ -21,6 +21,7 @@ frontend/.env.local
 # Sncast (contains private keys / API keys)
 contracts/accounts.json
 contracts/snfoundry.toml
+.secrets
 
 # System
 .DS_Store
@@ -28,6 +29,10 @@ contracts/snfoundry.toml
 .env
 frontend/.env
 node_modules/
+
+# Build artifacts
+target/
+*.tsbuildinfo
 
 # IDE
 .vscode/
@@ -39,3 +44,7 @@ node_modules/
 # Build Artifacts
 target/
 frontend/tsconfig.tsbuildinfo
+
+# Debug / scratch scripts
+test_hash.js
+test_single_hash.js

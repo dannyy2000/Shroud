@@ -50,7 +50,8 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
     setStep("signing");
 
     try {
-      const marketAddress = await getMarketAddress(marketId);
+      // Prefer the address stored at bet time — avoids issues if factory was redeployed.
+      const marketAddress = selectedBet.marketAddress || (await getMarketAddress(marketId));
       const recipientAddress = recipient.trim() || address;
 
       // ZK claim proof bypassed while Poseidon2 (BN254) vs Starknet Poseidon
@@ -77,8 +78,12 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
           process.env.NEXT_PUBLIC_SEPOLIA_PROVIDER_URL ||
           "https://starknet-sepolia-rpc.publicnode.com",
       });
-      await provider.waitForTransaction(tx.transaction_hash);
+      const receipt = await provider.waitForTransaction(tx.transaction_hash);
       toast.dismiss("claim-tx");
+
+      if ((receipt as any).execution_status === "REVERTED") {
+        throw new Error((receipt as any).revert_reason ?? "Transaction reverted");
+      }
 
       setClaimed((prev) => new Set([...prev, selectedBet.betCommitment]));
       setSelectedBetIdx(0);

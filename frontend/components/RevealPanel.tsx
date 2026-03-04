@@ -40,7 +40,10 @@ export const RevealPanel = ({ marketId }: RevealPanelProps) => {
     setStep("signing");
 
     try {
-      const marketAddress = await getMarketAddress(marketId);
+      // Use the address where the bet was actually placed (stored at bet time).
+      // Re-fetching from the factory would return the wrong address if the factory
+      // was redeployed after the bet was placed.
+      const marketAddress = selectedBet.marketAddress || (await getMarketAddress(marketId));
 
       // reveal_bet(bet_commitment, outcome, nonce)
       // outcome must match what was committed: poseidon(outcome_felt, nonce) == bet_commitment
@@ -65,8 +68,12 @@ export const RevealPanel = ({ marketId }: RevealPanelProps) => {
           process.env.NEXT_PUBLIC_SEPOLIA_PROVIDER_URL ||
           "https://starknet-sepolia-rpc.publicnode.com",
       });
-      await provider.waitForTransaction(tx.transaction_hash);
+      const receipt = await provider.waitForTransaction(tx.transaction_hash);
       toast.dismiss("reveal-tx");
+
+      if ((receipt as any).execution_status === "REVERTED") {
+        throw new Error((receipt as any).revert_reason ?? "Transaction reverted");
+      }
 
       setRevealed((prev) => new Set([...prev, selectedBet.betCommitment]));
       setSelectedBetIdx(0);

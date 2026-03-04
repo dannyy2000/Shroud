@@ -106,9 +106,22 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
       //    Enable full proofs via generateMembershipProof() in zkProof.ts.
       const zkProofCalldata: string[] = [];
 
-      // 4. Submit place_bet transaction
+      // 4. Approve STRK + place_bet in one multicall.
+      //    Bypass mode: market pulls STRK directly from caller, so we must
+      //    pre-approve the tier amount to the market contract.
+      const strkToken = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
+      const tierAmount = tierInfo?.amountWei ?? "10000000000000000000";
+
       setStep("signing");
       const tx = await account.execute([
+        {
+          contractAddress: strkToken,
+          entrypoint: "approve",
+          calldata: CallData.compile({
+            spender: marketAddress,
+            amount: { low: tierAmount, high: "0" },
+          }),
+        },
         {
           contractAddress: marketAddress,
           entrypoint: "place_bet",
@@ -129,8 +142,15 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
           process.env.NEXT_PUBLIC_SEPOLIA_PROVIDER_URL ||
           "https://starknet-sepolia-rpc.publicnode.com",
       });
-      await provider.waitForTransaction(tx.transaction_hash);
+      const receipt = await provider.waitForTransaction(tx.transaction_hash);
       toast.dismiss("bet-tx");
+
+      // Reject reverted transactions — starknet.js treats ACCEPTED_ON_L2 finality as
+      // success even when execution_status is REVERTED, so we must check explicitly.
+      if ((receipt as any).execution_status === "REVERTED") {
+        const revertReason = (receipt as any).revert_reason ?? "unknown reason";
+        throw new Error(`Transaction reverted: ${revertReason}`);
+      }
 
       // 5. Save bet record for reveal phase
       const betRecord: StoredBet = {
