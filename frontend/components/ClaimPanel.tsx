@@ -5,27 +5,79 @@ import { useAccount } from "@starknet-react/core";
 import { CallData } from "starknet";
 import toast from "react-hot-toast";
 import { loadBetsForMarket } from "~~/components/BetPanel";
-import { getMarketAddress } from "~~/lib/contracts";
+import { getMarketAddress, getMarketContract } from "~~/lib/contracts";
 import { useSecretNotes } from "~~/hooks/useSecretNotes";
 
 interface ClaimPanelProps {
   marketId: number;
+  marketAddress?: string;
   outcome: string; // "Yes" | "No" — the winning outcome
 }
 
-export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
+export const ClaimPanel = ({ marketId, marketAddress, outcome }: ClaimPanelProps) => {
   const { account, address, status } = useAccount();
   useSecretNotes(); // keep hook for note storage side-effects
   const [savedBets, setSavedBets] = useState<ReturnType<typeof loadBetsForMarket>>([]);
   const [selectedBetIdx, setSelectedBetIdx] = useState(0);
   const [recipient, setRecipient] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState<"idle" | "signing" | "confirming">("idle");
-  const [claimed, setClaimed] = useState<Set<string>>(new Set());
+  const [step, setStep] = useState<"idle" | "preparing" | "signing" | "confirming">("idle");
+  const CLAIMED_KEY = `shroud_claimed_${marketId}`;
+
+  // Load claimed set from localStorage so it survives page reloads
+  const [claimed, setClaimed] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(CLAIMED_KEY);
+      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  });
 
   useEffect(() => {
-    setSavedBets(loadBetsForMarket(marketId));
+    const bets = loadBetsForMarket(marketId, marketAddress);
+    setSavedBets(bets);
+
+    // Sync claimed status with on-chain data
+    const syncOnChain = async () => {
+      try {
+        const address = await getMarketAddress(marketId);
+        const contract = getMarketContract(address);
+        const onChainClaimed = new Set<string>();
+
+        // Check each saved bet against the contract
+        await Promise.all(
+          bets.map(async (bet) => {
+            const isClaimed = await contract.is_bet_claimed(bet.betCommitment);
+            if (isClaimed) {
+              onChainClaimed.add(bet.betCommitment);
+            }
+          })
+        );
+
+        if (onChainClaimed.size > 0) {
+          setClaimed((prev) => {
+            const next = new Set(prev);
+            onChainClaimed.forEach((c) => next.add(c));
+            return next;
+          });
+        }
+      } catch (err) {
+        console.error("Failed to sync claimed status on-chain:", err);
+      }
+    };
+
+    if (bets.length > 0) {
+      syncOnChain();
+    }
   }, [marketId]);
+
+  // Persist claimed set whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(CLAIMED_KEY, JSON.stringify([...claimed]));
+    } catch { }
+  }, [claimed, CLAIMED_KEY]);
 
   // Only show bets that match the winning outcome and haven't been claimed
   const winningBets = savedBets.filter(
@@ -47,7 +99,7 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
     }
 
     setSubmitting(true);
-    setStep("signing");
+    setStep("preparing");
 
     try {
       // Prefer the address stored at bet time — avoids issues if factory was redeployed.
@@ -57,6 +109,7 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
       // ZK claim proof bypassed while Poseidon2 (BN254) vs Starknet Poseidon
       // hash alignment is being resolved. Contract accepts empty proof span.
       const zkProofCalldata: string[] = [];
+      setStep("signing");
       const tx = await account.execute([
         {
           contractAddress: marketAddress,
@@ -94,12 +147,21 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
       const msg = err?.message || String(err);
       if (msg.includes("User abort") || msg.includes("rejected")) {
         toast.error("Transaction rejected");
-      } else if (msg.includes("Membership proof") || msg.includes("zk_proof")) {
-        toast.error("ZK proof required — proof generation not yet integrated");
+      } else if (msg.includes("Market not resolved")) {
+        toast.error("The market hasn't been resolved yet. Wait for the creator or oracle to resolve it.", { duration: 8000 });
+      } else if (msg.includes("No funds in market pool") || msg.includes("Result::unwrap failed")) {
+        toast.error(
+          "The market contract has no STRK. The bet stake was not deposited into this market. Contact the market creator to fund the contract.",
+          { duration: 10000 }
+        );
+      } else if (msg.includes("Bet not revealed")) {
+        toast.error("This bet was never revealed during the reveal phase and cannot be claimed.", { duration: 8000 });
+      } else if (msg.includes("Bet did not win") || msg.includes("Not winner")) {
+        toast.error("This bet is not on the winning side.");
       } else if (msg.includes("Already claimed")) {
-        toast.error("This bet has already been claimed");
-      } else if (msg.includes("Not winner")) {
-        toast.error("This bet is not on the winning side");
+        toast.error("This bet has already been claimed.");
+      } else if (msg.includes("Membership proof") || msg.includes("zk_proof")) {
+        toast.error("ZK proof required — proof generation not yet integrated.");
       } else {
         toast.error("Claim failed: " + msg.slice(0, 120));
       }
@@ -235,7 +297,9 @@ export const ClaimPanel = ({ marketId, outcome }: ClaimPanelProps) => {
             {submitting
               ? step === "confirming"
                 ? "Confirming..."
-                : "Signing..."
+                : step === "signing"
+                  ? "Signing..."
+                  : "Preparing..."
               : status !== "connected"
                 ? "Connect Wallet"
                 : "Claim Winnings"}

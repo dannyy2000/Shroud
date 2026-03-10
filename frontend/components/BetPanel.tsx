@@ -27,12 +27,17 @@ interface StoredBet {
 
 const BET_STORAGE_KEY = "shroud_pending_bets";
 
-export function loadBetsForMarket(marketId: number): StoredBet[] {
+export function loadBetsForMarket(marketId: number, marketAddress?: string): StoredBet[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(BET_STORAGE_KEY);
     const all: StoredBet[] = raw ? JSON.parse(raw) : [];
-    return all.filter((b) => b.marketId === marketId);
+    return all.filter((b) => {
+      if (b.marketId !== marketId) return false;
+      // Filter by address when known to prevent stale bets from old deployments bleeding in
+      if (marketAddress && b.marketAddress) return b.marketAddress === marketAddress;
+      return true;
+    });
   } catch {
     return [];
   }
@@ -45,7 +50,7 @@ function saveBet(bet: StoredBet) {
     const all: StoredBet[] = raw ? JSON.parse(raw) : [];
     all.push(bet);
     localStorage.setItem(BET_STORAGE_KEY, JSON.stringify(all));
-  } catch {}
+  } catch { }
 }
 
 // outcome_to_felt: Pending=0, Yes=1, No=2 (matches Cairo contract)
@@ -59,7 +64,7 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
   const [selectedOutcome, setSelectedOutcome] = useState<"yes" | "no" | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState<"idle" | "signing" | "confirming">("idle");
+  const [step, setStep] = useState<"idle" | "preparing" | "signing" | "confirming">("idle");
 
   const tierInfo = POOL_TIERS[poolTier];
   const availableNotes = unusedNotes.filter((n) => n.tier === poolTier);
@@ -87,8 +92,9 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
       return;
     }
 
+    // Give immediate visual feedback before any async work
     setSubmitting(true);
-    setStep("signing");
+    setStep("preparing");
 
     try {
       // 1. Get deployed market address
@@ -103,25 +109,12 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
 
       // 3. ZK membership proof — bypassed in this dev build.
       //    The contract accepts an empty proof span; commitment uses keccak256.
-      //    Enable full proofs via generateMembershipProof() in zkProof.ts.
       const zkProofCalldata: string[] = [];
 
-      // 4. Approve STRK + place_bet in one multicall.
-      //    Bypass mode: market pulls STRK directly from caller, so we must
-      //    pre-approve the tier amount to the market contract.
-      const strkToken = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
-      const tierAmount = tierInfo?.amountWei ?? "10000000000000000000";
-
+      // 4. Place bet — the deposit pool releases STRK to the market automatically
+      //    when the nullifier is processed. No approve needed from the caller.
       setStep("signing");
       const tx = await account.execute([
-        {
-          contractAddress: strkToken,
-          entrypoint: "approve",
-          calldata: CallData.compile({
-            spender: marketAddress,
-            amount: { low: tierAmount, high: "0" },
-          }),
-        },
         {
           contractAddress: marketAddress,
           entrypoint: "place_bet",
@@ -177,12 +170,18 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
       if (msg.includes("User abort") || msg.includes("rejected")) {
         toast.error("Transaction rejected");
       } else if (
-        msg.includes("Membership proof") ||
-        msg.includes("execution error") ||
-        msg.includes("reverted") ||
-        msg.includes("verify")
+        msg.includes("Market not accepting bets") ||
+        // hex-encoded felt: 'Market not accepting bets'
+        msg.includes("4d61726b6574206e6f7420616363657074696e672062657473")
       ) {
+        toast.error("The betting period for this market has ended.", { duration: 6000 });
+      } else if (msg.includes("Duplicate bet commitment")) {
+        toast.error("This commitment was already submitted. Please refresh and try again.");
+      } else if (msg.includes("Membership proof") || msg.includes("verify")) {
         toast.error("On-chain ZK verification failed. Your note is still valid.", { duration: 8000 });
+      } else if (msg.includes("reverted") || msg.includes("execution error")) {
+        // Catch-all for other on-chain reverts — show the actual reason
+        toast.error("Transaction reverted: " + msg.slice(0, 150), { duration: 8000 });
       } else {
         toast.error("Bet failed: " + msg.slice(0, 120));
       }
@@ -286,13 +285,12 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
                   : side === "yes"
                     ? "#3fb950"
                     : "#f85149",
-              border: `2px solid ${
-                selectedOutcome === side
-                  ? side === "yes"
-                    ? "#3fb950"
-                    : "#f85149"
-                  : "#30363d"
-              }`,
+              border: `2px solid ${selectedOutcome === side
+                ? side === "yes"
+                  ? "#3fb950"
+                  : "#f85149"
+                : "#30363d"
+                }`,
             }}
           >
             {side.toUpperCase()}
@@ -316,7 +314,11 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
         <div className="flex items-center gap-2 text-xs">
           <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: "#58a6ff" }} />
           <span style={{ color: "#58a6ff" }}>
-            {step === "signing" ? "Sign transaction in wallet…" : "Confirming on-chain…"}
+            {step === "preparing"
+              ? "Preparing transaction…"
+              : step === "signing"
+                ? "Sign transaction in wallet…"
+                : "Confirming on-chain…"}
           </span>
         </div>
       )}
@@ -339,7 +341,9 @@ export const BetPanel = ({ marketId, poolTier }: BetPanelProps) => {
         {submitting
           ? step === "confirming"
             ? "Confirming..."
-            : "Signing..."
+            : step === "signing"
+              ? "Signing..."
+              : "Preparing..."
           : status !== "connected"
             ? "Connect Wallet"
             : !selectedNote

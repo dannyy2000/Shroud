@@ -5,22 +5,75 @@ import { useAccount } from "@starknet-react/core";
 import { CallData } from "starknet";
 import toast from "react-hot-toast";
 import { loadBetsForMarket } from "~~/components/BetPanel";
-import { getMarketAddress, outcomeEnum } from "~~/lib/contracts";
+import { getMarketAddress, getMarketContract, outcomeEnum } from "~~/lib/contracts";
 
 interface RevealPanelProps {
   marketId: number;
+  marketAddress?: string;
 }
 
-export const RevealPanel = ({ marketId }: RevealPanelProps) => {
+export const RevealPanel = ({ marketId, marketAddress }: RevealPanelProps) => {
   const { account, status } = useAccount();
   const [savedBets, setSavedBets] = useState<ReturnType<typeof loadBetsForMarket>>([]);
   const [selectedBetIdx, setSelectedBetIdx] = useState(0);
   const [submitting, setSubmitting] = useState(false);
-  const [step, setStep] = useState<"idle" | "signing" | "confirming">("idle");
-  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const [step, setStep] = useState<"idle" | "preparing" | "signing" | "confirming">("idle");
+
+  const REVEALED_KEY = `shroud_revealed_${marketId}`;
+
+  // Load revealed set from localStorage so it survives page reloads
+  const [revealed, setRevealed] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(REVEALED_KEY);
+      return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  });
+
+  // Persist revealed set whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(REVEALED_KEY, JSON.stringify([...revealed]));
+    } catch { }
+  }, [revealed, REVEALED_KEY]);
 
   useEffect(() => {
-    setSavedBets(loadBetsForMarket(marketId));
+    const bets = loadBetsForMarket(marketId, marketAddress);
+    setSavedBets(bets);
+
+    // Sync revealed status with on-chain data
+    const syncOnChain = async () => {
+      try {
+        const address = await getMarketAddress(marketId);
+        const contract = getMarketContract(address);
+        const onChainRevealed = new Set<string>();
+
+        // Check each saved bet against the contract
+        await Promise.all(
+          bets.map(async (bet) => {
+            const isRevealed = await contract.is_bet_revealed(bet.betCommitment);
+            if (isRevealed) {
+              onChainRevealed.add(bet.betCommitment);
+            }
+          })
+        );
+
+        if (onChainRevealed.size > 0) {
+          setRevealed((prev) => {
+            const next = new Set(prev);
+            onChainRevealed.forEach((c) => next.add(c));
+            return next;
+          });
+        }
+      } catch (err) {
+        console.error("Failed to sync revealed status on-chain:", err);
+      }
+    };
+
+    if (bets.length > 0) {
+      syncOnChain();
+    }
   }, [marketId]);
 
   const unrevealed = savedBets.filter((b) => !revealed.has(b.betCommitment));
@@ -37,7 +90,7 @@ export const RevealPanel = ({ marketId }: RevealPanelProps) => {
     }
 
     setSubmitting(true);
-    setStep("signing");
+    setStep("preparing");
 
     try {
       // Use the address where the bet was actually placed (stored at bet time).
@@ -47,6 +100,7 @@ export const RevealPanel = ({ marketId }: RevealPanelProps) => {
 
       // reveal_bet(bet_commitment, outcome, nonce)
       // outcome must match what was committed: poseidon(outcome_felt, nonce) == bet_commitment
+      setStep("signing");
       const tx = await account.execute([
         {
           contractAddress: marketAddress,
@@ -89,7 +143,10 @@ export const RevealPanel = ({ marketId }: RevealPanelProps) => {
       } else if (msg.includes("Reveal mismatch")) {
         toast.error("Reveal mismatch — commitment doesn't match outcome/nonce");
       } else if (msg.includes("Not in reveal phase")) {
-        toast.error("Market is not in reveal phase yet");
+        toast.error(
+          "Cannot reveal: the market is not in the reveal phase. The betting window may not have closed yet, or the reveal deadline may have already passed.",
+          { duration: 8000 }
+        );
       } else {
         toast.error("Reveal failed: " + msg.slice(0, 120));
       }
@@ -202,7 +259,9 @@ export const RevealPanel = ({ marketId }: RevealPanelProps) => {
             {submitting
               ? step === "confirming"
                 ? "Confirming..."
-                : "Signing..."
+                : step === "signing"
+                  ? "Signing..."
+                  : "Preparing..."
               : status !== "connected"
                 ? "Connect Wallet"
                 : `Reveal ${selectedBet?.outcome.toUpperCase() ?? ""} Bet`}

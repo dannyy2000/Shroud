@@ -47,15 +47,18 @@ export default function MarketDetailPage({ id }: { id: string }) {
 
   const handleResolve = async () => {
     if (!account || walletStatus !== "connected") { toast.error("Connect wallet"); return; }
-    if (!resolveOutcome) { toast.error("Select an outcome"); return; }
+
+    const isOracle = market?.resolutionSource === "PragmaOracle";
+    if (!isOracle && !resolveOutcome) { toast.error("Select an outcome"); return; }
+
     setResolving(true);
     try {
       const marketAddress = await getMarketAddress(marketId);
       const { CairoCustomEnum } = await import("starknet");
       const outcomeEnum = new CairoCustomEnum({
-        Pending: undefined,
-        Yes: resolveOutcome === "yes" ? {} : undefined,
-        No: resolveOutcome === "no" ? {} : undefined,
+        Pending: isOracle ? {} : undefined,
+        Yes: !isOracle && resolveOutcome === "yes" ? {} : undefined,
+        No: !isOracle && resolveOutcome === "no" ? {} : undefined,
       });
       const tx = await account.execute([{
         contractAddress: marketAddress,
@@ -70,7 +73,16 @@ export default function MarketDetailPage({ id }: { id: string }) {
       toast.success("Market resolved!");
     } catch (err: any) {
       toast.dismiss("resolve-tx");
-      toast.error("Resolve failed: " + (err?.message ?? String(err)).slice(0, 120));
+      const msg = err?.message ?? String(err);
+      if (msg.includes("Only creator can resolve")) {
+        toast.error("Only the market creator can resolve this market.");
+      } else if (msg.includes("Not ready for resolution")) {
+        toast.error("The reveal window hasn't closed yet. Wait for the reveal deadline to pass.");
+      } else if (msg.includes("Market is cancelled")) {
+        toast.error("This market was cancelled and cannot be resolved.");
+      } else {
+        toast.error("Resolve failed: " + msg.slice(0, 120));
+      }
     } finally {
       setResolving(false);
     }
@@ -255,10 +267,10 @@ export default function MarketDetailPage({ id }: { id: string }) {
             <BetPanel marketId={market.id} poolTier={market.poolTier} />
           )}
           {contractDeployed !== false && effectiveStatus === "Revealing" && (
-            <RevealPanel marketId={market.id} />
+            <RevealPanel marketId={market.id} marketAddress={market.address} />
           )}
           {contractDeployed !== false && effectiveStatus === "Resolved" && (
-            <ClaimPanel marketId={market.id} outcome={market.outcome ?? "Unknown"} />
+            <ClaimPanel marketId={market.id} marketAddress={market.address} outcome={market.outcome ?? "Unknown"} />
           )}
           {contractDeployed !== false && effectiveStatus === "Cancelled" && (
             <RefundPanel marketId={market.id} />
@@ -270,32 +282,52 @@ export default function MarketDetailPage({ id }: { id: string }) {
               </h3>
               {effectiveStatus === "Resolving" ? (
                 <>
-                  <p className="text-xs" style={{ color: "#8b949e" }}>
-                    The reveal window has closed. As market creator, pick the winning outcome to resolve.
-                  </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    {(["yes", "no"] as const).map((side) => (
+                  {market.resolutionSource === "PragmaOracle" ? (
+                    <>
+                      <p className="text-xs" style={{ color: "#8b949e" }}>
+                        This market is automated via Pragma Oracle. Anyone can trigger the resolution now that the reveal window has closed.
+                      </p>
                       <button
-                        key={side}
-                        onClick={() => setResolveOutcome(side)}
-                        className="py-3 rounded-xl font-bold text-sm transition-all"
-                        style={{
-                          backgroundColor: resolveOutcome === side ? (side === "yes" ? "#3fb950" : "#f85149") : "#161b22",
-                          color: resolveOutcome === side ? "#0d1117" : (side === "yes" ? "#3fb950" : "#f85149"),
-                          border: `2px solid ${resolveOutcome === side ? (side === "yes" ? "#3fb950" : "#f85149") : "#30363d"}`,
-                        }}
+                        onClick={handleResolve}
+                        disabled={resolving || walletStatus !== "connected"}
+                        className="w-full py-4 rounded-xl font-bold text-sm shroud-btn-primary transition-all flex items-center justify-center gap-2"
                       >
-                        {side.toUpperCase()}
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                        </svg>
+                        {resolving ? "Calling Oracle..." : "Resolve via Pragma Oracle"}
                       </button>
-                    ))}
-                  </div>
-                  <button
-                    onClick={handleResolve}
-                    disabled={!resolveOutcome || resolving || walletStatus !== "connected"}
-                    className="w-full py-3 rounded-xl font-semibold text-sm shroud-btn-primary transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {resolving ? "Resolving..." : resolveOutcome ? `Resolve as ${resolveOutcome.toUpperCase()}` : "Select outcome above"}
-                  </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs" style={{ color: "#8b949e" }}>
+                        The reveal window has closed. As market creator, pick the winning outcome to resolve.
+                      </p>
+                      <div className="grid grid-cols-2 gap-3">
+                        {(["yes", "no"] as const).map((side) => (
+                          <button
+                            key={side}
+                            onClick={() => setResolveOutcome(side)}
+                            className="py-3 rounded-xl font-bold text-sm transition-all"
+                            style={{
+                              backgroundColor: resolveOutcome === side ? (side === "yes" ? "#3fb950" : "#f85149") : "#161b22",
+                              color: resolveOutcome === side ? "#0d1117" : (side === "yes" ? "#3fb950" : "#f85149"),
+                              border: `2px solid ${resolveOutcome === side ? (side === "yes" ? "#3fb950" : "#f85149") : "#30363d"}`,
+                            }}
+                          >
+                            {side.toUpperCase()}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        onClick={handleResolve}
+                        disabled={!resolveOutcome || resolving || walletStatus !== "connected"}
+                        className="w-full py-3 rounded-xl font-semibold text-sm shroud-btn-primary transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {resolving ? "Resolving..." : resolveOutcome ? `Resolve as ${resolveOutcome.toUpperCase()}` : "Select outcome above"}
+                      </button>
+                    </>
+                  )}
                 </>
               ) : (
                 <p className="text-sm" style={{ color: "#8b949e" }}>
