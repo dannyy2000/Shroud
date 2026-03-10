@@ -38,7 +38,7 @@ Shroud breaks the deposit-to-bet-to-payout link using ZK proofs at every step.
 
 **1. Deposit** — You deposit a fixed amount (10, 100, or 1000 STRK) into a shared anonymity pool. On-chain, all anyone sees is *"someone deposited 100 STRK"* — you're one of hundreds of identical depositors.
 
-**2. Bet** — From any wallet, you submit a ZK proof that says *"I'm a valid depositor and here's my bet."* The proof is verified on-chain by [Garaga](https://github.com/keep-starknet-strange/garaga). Your bet direction is hidden inside a cryptographic commitment. Nobody knows which side you took.
+**2. Bet** — From any wallet, you submit a ZK proof that says *"I'm a valid depositor and here's my bet."* The proof is verified on-chain by [Garaga](https://github.com/keep-starknet-strange/garaga). Your bet direction is hidden inside a cryptographic commitment (Keccak256). Nobody knows which side you took.
 
 **3. Reveal** — After the betting deadline, everyone reveals their bet direction. The commit-reveal structure means no bet had ordering priority — this is a natural batch auction. MEV is structurally dead.
 
@@ -81,42 +81,47 @@ Parimutuel is the only settlement model compatible with commit-reveal privacy. N
 
 Anyone can create a market by staking a STRK bond. If the creator resolves dishonestly and gets disputed, the bond is slashed. If they resolve honestly, the bond is returned after the dispute window closes. This prevents spam and aligns creator incentives without permissioning.
 
+### Why Keccak256 for Commitments?
+
+Bet commitments are `keccak256(outcome || nonce)`. Keccak256 was chosen because it is natively supported in both JavaScript (`ethers.js`) and Cairo (`core::keccak`), allowing the frontend to compute commitments locally without a server round-trip — and the contract to verify them cheaply on-chain.
+
 ---
 
 ## Architecture
 
 ```
-Frontend (NextJS + Scaffold-Stark)
-  │  In-browser Noir proof generation (noir.js)
-  │  Garaga JS SDK for calldata generation
+Frontend (NextJS + Scaffold-Stark 2)
+  │  Keccak256 bet commitments (ethers.js)
+  │  Poseidon2-BN254 Merkle tree (client-side)
+  │  Server-side Noir proof generation (Nargo + Barretenberg)
+  │  Garaga calldata generation
   │
   ▼
-Smart Contracts (Cairo)
-  ├── DepositPool.cairo     Anonymity pool + Poseidon Merkle tree (depth 20)
-  ├── MarketFactory.cairo   Staked market creation + indexing
-  ├── Market.cairo           Betting, reveal, resolution, settlement, claims
-  └── Verifiers/             Garaga-generated (UltraKeccakZKHonk)
+Smart Contracts (Cairo 2.9.2, Starknet Sepolia)
+  ├── DepositPool.cairo       Anonymity pool + Poseidon2 Merkle tree (depth 20)
+  ├── MarketFactory.cairo     Staked market creation + registry
+  ├── Market.cairo            Betting, commit-reveal, resolution, settlement, claims
+  └── Verifiers/ (Garaga-generated, UltraKeccakZKHonk)
         ├── MembershipVerifier   "I deposited into the pool"
-        ├── BetVerifier          "This reveal matches my commitment"
         └── ClaimVerifier        "I own a winning bet"
   │
   ▼
-Noir ZK Circuits
+Noir ZK Circuits (Noir 1.0.0-beta.16)
   ├── membership_proof   Private: secret, nullifier, merkle_path
-  │                      Public: merkle_root, nullifier, bet_commitment, market_id
-  ├── bet_proof          Private: nonce
-  │                      Public: bet_commitment, outcome
+  │                      Public:  merkle_root, nullifier, bet_commitment, market_id
   └── claim_proof        Private: nonce, nullifier_secret
-                         Public: bet_commitment, winning_outcome, market_id, nullifier
+                         Public:  bet_commitment, winning_outcome, market_id, nullifier
 ```
 
 ### Verification Flow
 
-1. User generates a Noir proof in-browser (`noir.js`)
-2. Garaga JS SDK converts the proof to calldata (`felt252` array)
+1. User generates a Noir proof server-side (`/api/prove/*` — Nargo + Barretenberg)
+2. Garaga SDK converts the proof to `felt252` calldata
 3. User sends a transaction to the Market contract
 4. Market contract calls the Garaga verifier: `verify_ultra_keccak_zk_honk_proof(calldata)` → returns `Ok(public_inputs)` or `Err`
-5. Market contract validates public inputs against expected on-chain values
+5. Market contract validates public inputs match expected on-chain values (root, nullifier, commitment, market ID)
+
+> **Current status:** ZK proof verification is fully implemented and deployed. For the hackathon demo the proof step is bypassed (empty calldata accepted) to allow end-to-end testing without the 30–120s Barretenberg proving time. Full proof generation is wired and functional via the `/api/prove/` routes.
 
 ---
 
@@ -124,12 +129,12 @@ Noir ZK Circuits
 
 | Layer | Technology | Version |
 |-------|-----------|---------|
-| Smart Contracts | Cairo (Starknet) | 2.14.0 |
+| Smart Contracts | Cairo (Starknet) | 2.9.2 |
 | ZK Circuits | Noir | 1.0.0-beta.16 |
-| Proof Backend | Barretenberg | 3.0.0-nightly.20251104 |
+| Proof Backend | Barretenberg | 0.36.0 |
 | On-chain Verification | Garaga | 1.0.1 |
-| Price Oracle | Pragma | — |
-| Frontend | NextJS + Scaffold-Stark | — |
+| Price Oracle | Pragma | Sepolia |
+| Frontend | NextJS 15 + Scaffold-Stark 2 | — |
 | Wallet | StarknetKit | — |
 | Network | Starknet Sepolia | testnet |
 
@@ -148,7 +153,7 @@ Noir ZK Circuits
 |--------------|--------|--------|
 | Front-running / MEV | Pending bets visible in mempool | Bets are encrypted commitments |
 | Whale manipulation | Large positions visible, move markets | Positions hidden until reveal |
-| Herd behavior | Live odds create bandwagon effect | No live odds exist |
+| Herd behavior | Live odds create bandwagon effect | No live odds exist during betting |
 | Oracle bribery | Voters visible, can be targeted | ZK-private voting (Phase 2) |
 
 ---
@@ -159,19 +164,29 @@ Noir ZK Circuits
 shroud/
 ├── contracts/src/
 │   ├── interfaces.cairo        Contract interfaces and types
-│   ├── deposit_pool.cairo      Anonymity pool + Poseidon Merkle tree
+│   ├── deposit_pool.cairo      Anonymity pool + Poseidon2 Merkle tree
 │   ├── market_factory.cairo    Staked market creation + indexing
 │   └── market.cairo            Core market lifecycle
 ├── circuits/
-│   ├── membership_proof/       Prove pool membership without revealing deposit
-│   ├── bet_proof/              Prove reveal matches commitment
-│   └── claim_proof/            Prove winning bet ownership
-├── verifiers/
-│   ├── membership_verifier/    Garaga-generated Cairo verifier
-│   ├── bet_verifier/           Garaga-generated Cairo verifier
-│   └── claim_verifier/         Garaga-generated Cairo verifier
-└── frontend/                   NextJS dApp
+│   ├── membership_proof/       Prove pool membership without revealing identity
+│   └── claim_proof/            Prove winning bet ownership for anonymous payout
+├── membership_verifier/        Garaga-generated Cairo verifier (membership)
+├── claim_verifier/             Garaga-generated Cairo verifier (claim)
+└── frontend/                   NextJS dApp (Scaffold-Stark 2)
+    ├── app/api/prove/          Server-side proof generation routes
+    ├── components/             BetPanel, RevealPanel, ClaimPanel, ...
+    ├── hooks/                  useMarket, useMarkets, useSecretNotes
+    └── lib/                    zkProof.ts, contracts.ts, utils.ts
 ```
+
+---
+
+## Deployed Contracts (Starknet Sepolia)
+
+| Contract | Address |
+|----------|---------|
+| MarketFactory | `0x00f9bdf8c1226e15351d5d152a1a11b80462472fba234a060325d8512728079b` |
+| DepositPool | `0x319e9d15cae7ee4ab4bf8efb3b4ea48bb18c47cf649e02fab421b0d6eae4b28` |
 
 ---
 
@@ -181,69 +196,55 @@ shroud/
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Scarb | 2.14.0 | `curl --proto '=https' --tlsv1.2 -sSf https://docs.swmansion.com/scarb/install.sh \| sh -s -- -v 2.14.0` |
-| Starknet Foundry | 0.53.0 | [Installation guide](https://foundry-rs.github.io/starknet-foundry/) |
+| Scarb | 2.9.2 | `curl --proto '=https' --tlsv1.2 -sSf https://docs.swmansion.com/scarb/install.sh \| sh` |
+| Starknet Foundry | latest | [Installation guide](https://foundry-rs.github.io/starknet-foundry/) |
 | Nargo | 1.0.0-beta.16 | `noirup --version 1.0.0-beta.16` |
-| Barretenberg | 3.0.0-nightly.20251104 | `bbup --version 3.0.0-nightly.20251104` |
+| Barretenberg | 0.36.0 | `bbup --version 0.36.0` |
 | Garaga | 1.0.1 | `pip install garaga==1.0.1` |
-| Python | 3.10-3.12 | Required by Garaga |
 | Node.js | 18+ | Frontend |
 
 ### Build
 
 ```bash
-# 1. Compile Noir circuits
-cd circuits/membership_proof && nargo build && cd ../..
-cd circuits/bet_proof && nargo build && cd ../..
-cd circuits/claim_proof && nargo build && cd ../..
-
-# 2. Generate verification keys
-bb write_vk -s ultra_honk --oracle_hash keccak \
-  -b circuits/membership_proof/target/membership_proof.json \
-  -o circuits/membership_proof/target/vk
-
-bb write_vk -s ultra_honk --oracle_hash keccak \
-  -b circuits/bet_proof/target/bet_proof.json \
-  -o circuits/bet_proof/target/vk
-
-bb write_vk -s ultra_honk --oracle_hash keccak \
-  -b circuits/claim_proof/target/claim_proof.json \
-  -o circuits/claim_proof/target/vk
-
-# 3. Generate Garaga Cairo verifiers
-garaga gen --system ultra_keccak_zk_honk \
-  --vk circuits/membership_proof/target/vk \
-  --project-name verifiers/membership_verifier
-
-garaga gen --system ultra_keccak_zk_honk \
-  --vk circuits/bet_proof/target/vk \
-  --project-name verifiers/bet_verifier
-
-garaga gen --system ultra_keccak_zk_honk \
-  --vk circuits/claim_proof/target/vk \
-  --project-name verifiers/claim_verifier
-
-# 4. Build Cairo contracts
+# 1. Compile Cairo contracts
 cd contracts && scarb build
+
+# 2. Compile Noir circuits
+cd circuits/membership_proof && nargo build
+cd ../claim_proof && nargo build
+
+# 3. Frontend
+cd frontend && yarn install && yarn dev
+```
+
+### Environment
+
+Copy `frontend/.env.example` to `frontend/.env` and fill in:
+
+```bash
+NEXT_PUBLIC_SEPOLIA_PROVIDER_URL=<alchemy-or-infura-rpc>
+NEXT_PUBLIC_MARKET_FACTORY_ADDRESS=<deployed-factory>
+NEXT_PUBLIC_DEPOSIT_POOL_ADDRESS=<deployed-pool>
 ```
 
 ---
 
 ## Roadmap
 
-### Phase 1 — MVP (Feb 2026)
+### Phase 1 — MVP (Hackathon, March 2026)
 - [x] Architecture and design
 - [x] Cairo contracts: deposit pool, Merkle tree, market lifecycle
-- [x] Noir circuits: membership, bet, and claim proofs
-- [x] Garaga on-chain verification integration
+- [x] Noir circuits: membership and claim proofs
+- [x] Garaga on-chain ZK verifier integration
 - [x] Parimutuel settlement with 2% protocol fee
 - [x] Staked market creation with bond + slashing
-- [x] Pragma Oracle integration for price markets
-- [ ] Frontend: deposit, browse, bet, reveal, claim
-- [ ] Deploy to Starknet Sepolia
-- [ ] Demo video
+- [x] Pragma Oracle integration for automated price markets
+- [x] Commit-reveal scheme with Keccak256 (MEV-resistant)
+- [x] Frontend: deposit, browse, bet, reveal, claim, resolve
+- [x] Deployed to Starknet Sepolia
 
 ### Phase 2 — Post-Hackathon
+- [ ] Remove ZK bypass — full proof generation in production flow
 - [ ] ZK-private dispute voting (prevent oracle bribery)
 - [ ] Confidential payouts via Tongo SDK
 - [ ] Multiple betting epochs per market
