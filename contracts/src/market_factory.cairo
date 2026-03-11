@@ -13,7 +13,10 @@ pub mod MarketFactory {
         },
         syscalls::deploy_syscall,
     };
-    use shroud::interfaces::{IMarketFactory, ResolutionSource, PoolTier, MarketConfig};
+    use shroud::interfaces::{
+        IMarketFactory, ResolutionSource, PoolTier, MarketConfig,
+        IDepositPoolDispatcher, IDepositPoolDispatcherTrait,
+    };
 
     const DISPUTE_WINDOW: u64 = 172800; // 48 hours
 
@@ -154,6 +157,11 @@ pub mod MarketFactory {
                 class_hash, market_id_felt, calldata.span(), false,
             )
                 .unwrap();
+
+            // Authorize the new market in the DepositPool so it can call release_to_market.
+            // The factory is registered as an authorized caller via set_factory() on the pool.
+            let pool = IDepositPoolDispatcher { contract_address: self.deposit_pool.read() };
+            pool.authorize_market(market_address);
 
             let market_info = MarketInfo {
                 market_address,

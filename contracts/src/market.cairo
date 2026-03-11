@@ -16,11 +16,13 @@ pub mod Market {
             StoragePointerWriteAccess,
         },
     };
+    use core::num::traits::Zero;
     use shroud::interfaces::{
         IMarket, IDepositPoolDispatcher, IDepositPoolDispatcherTrait,
         IUltraKeccakZKHonkVerifierDispatcher, IUltraKeccakZKHonkVerifierDispatcherTrait,
         IPragmaOracleDispatcher, IPragmaOracleDispatcherTrait,
         MarketStatus, MarketConfig, Outcome, ResolutionSource, PoolTier, Bet,
+        DataType, AggregationMode, PragmaPricesResponse,
     };
 
     // Dispute window: 48 hours after creator resolution
@@ -29,9 +31,6 @@ pub mod Market {
     // Protocol fee: 2% (represented as 200 basis points)
     const PROTOCOL_FEE_BPS: u256 = 200;
     const BPS_DENOMINATOR: u256 = 10000;
-
-    // Pragma data type for spot price
-    const PRAGMA_SPOT_ENTRY: felt252 = 'SPOT';
 
     #[storage]
     struct Storage {
@@ -203,20 +202,24 @@ pub mod Market {
             //   3. The Merkle root matches the current pool state
             self._verify_membership_proof(zk_proof, bet_commitment, nullifier);
 
-            // Fund the market and prevent double-spending.
-            if zk_proof.len() > 0 {
-                // Full ZK mode: mark nullifier used in pool (pool holds the STRK).
-                // NOTE: full anonymity requires the DepositPool to also transfer the
-                // tier amount here — tracked as a future improvement once ZK is live.
+            // Fund the market from the deposit pool.
+            //
+            // release_to_market() marks the nullifier used AND transfers the
+            // tier amount from DepositPool → this market contract in one atomic step.
+            // This is the correct flow: user deposits STRK into the pool once,
+            // then spends a note to fund a bet.
+            //
+            // Fallback (nullifier = 0): pull directly from the caller — only for
+            // automated testing where no deposit pool note exists.
+            let config = self.config.read();
+            if nullifier != 0 {
                 let pool = IDepositPoolDispatcher {
                     contract_address: self.deposit_pool.read(),
                 };
-                pool.use_nullifier(nullifier);
+                pool.release_to_market(nullifier, config.pool_tier);
             } else {
-                // Bypass mode (dev / no ZK proof): pull STRK directly from the caller.
-                // This links the caller to the bet commitment, but is acceptable for
-                // testing. Caller must have approved this contract for the tier amount.
-                let config = self.config.read();
+                // Dev/test bypass: no note, pull STRK from caller's wallet.
+                // Caller must have pre-approved this contract for the tier amount.
                 let tier_amount: u256 = match config.pool_tier {
                     PoolTier::Small => 10_000_000_000_000_000_000_u256,
                     PoolTier::Medium => 100_000_000_000_000_000_000_u256,
@@ -324,8 +327,12 @@ pub mod Market {
                     let oracle = IPragmaOracleDispatcher {
                         contract_address: self.pragma_oracle.read(),
                     };
-                    let (price, decimals, _last_updated, _num_sources) = oracle
-                        .get_data(PRAGMA_SPOT_ENTRY, config.pragma_pair_id);
+                    let pragma_response: PragmaPricesResponse = oracle.get_data(
+                        DataType::Spot(config.pragma_pair_id),
+                        AggregationMode::Median
+                    );
+                    let price: u256 = pragma_response.price.into();
+                    let decimals = pragma_response.decimals;
 
                     // Normalize oracle price to 18 decimals for comparison with target_price
                     let oracle_price_normalized = if decimals < 18 {
@@ -394,15 +401,18 @@ pub mod Market {
             // Calculate payout (after 2% protocol fee)
             let (payout, fee) = self._calculate_payout();
 
-            // Transfer protocol fee to fee recipient (skip if zero address — dev mode)
+            // Guard: if the market pool is empty (e.g. funds never arrived),
+            // revert with a clear message rather than panicking inside _transfer_out.
+            let actual_payout = if self.protocol_fee_recipient.read().is_zero() { payout + fee } else { payout };
+            assert(actual_payout > 0, 'No funds in market pool');
+
+            // Transfer protocol fee to fee recipient (skip if zero address or zero fee)
             let fee_recipient = self.protocol_fee_recipient.read();
             if fee > 0 && !fee_recipient.is_zero() {
                 self._transfer_out(fee_recipient, fee);
             }
 
             // Transfer winnings to recipient (any address — can be fresh wallet)
-            // If fee_recipient is zero, include the fee so no STRK is stranded
-            let actual_payout = if fee_recipient.is_zero() { payout + fee } else { payout };
             self._transfer_out(recipient, actual_payout);
 
             self.emit(WinningsClaimed { bet_commitment, recipient });
@@ -748,8 +758,12 @@ pub mod Market {
             assert(success, 'STRK transfer failed');
         }
 
-        /// Transfer STRK tokens from this contract to recipient
+        /// Transfer STRK tokens from this contract to recipient.
+        /// Skips zero-amount transfers (some ERC20s reject them).
         fn _transfer_out(ref self: ContractState, to: ContractAddress, amount: u256) {
+            if amount == 0 {
+                return;
+            }
             let strk = self.strk_token.read();
 
             let mut calldata: Array<felt252> = array![];

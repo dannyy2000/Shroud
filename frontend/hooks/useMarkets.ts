@@ -33,7 +33,7 @@ function getCategoryForQuestion(question: string): string {
     try {
       const cats = JSON.parse(localStorage.getItem("shroud_market_categories") || "{}");
       if (cats[question.trim()]) return cats[question.trim()];
-    } catch {}
+    } catch { }
   }
   return detectCategory(question);
 }
@@ -143,6 +143,33 @@ function parseMarketCreatedEvent(data: string[]): MarketData | null {
   }
 }
 
+const STATUS_MAP: Record<string, string> = {
+  "0": "Open",
+  "1": "Revealing",
+  "2": "Resolving",
+  "3": "Resolved",
+  "4": "Disputed",
+  "5": "Cancelled",
+};
+
+// Status lifecycle order — higher = further along.
+const STATUS_ORDER: Record<string, number> = {
+  Open: 0, Revealing: 1, Resolving: 2, Resolved: 3, Disputed: 4, Cancelled: 5,
+};
+
+// Starknet contracts only run _update_status() inside transactions,
+// so a contract with passed deadlines may still report "Open" on-chain if
+// no one has interacted with it. This computes the true display status.
+function getEffectiveStatus(onChain: string, betDeadline: number, revealDeadline: number): string {
+  if (onChain === "Resolved" || onChain === "Cancelled" || onChain === "Disputed") return onChain;
+  const now = Math.floor(Date.now() / 1000);
+  let ts: string;
+  if (now < betDeadline) ts = "Open";
+  else if (now < revealDeadline) ts = "Revealing";
+  else ts = "Resolving";
+  return (STATUS_ORDER[onChain] ?? 0) >= (STATUS_ORDER[ts] ?? 0) ? onChain : ts;
+}
+
 export function useMarkets() {
   const [markets, setMarkets] = useState<MarketData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -162,31 +189,28 @@ export function useMarkets() {
         return;
       }
 
-      // First check if there are any markets
-      const factory = getMarketFactoryContract();
-      let marketCount: number;
+      // Fetch MarketCreated events directly — market_count check removed for speed
+      const eventKey = hash.getSelectorFromName("MarketCreated");
+      let eventsResponse;
       try {
-        const result = await factory.get_market_count();
-        marketCount = Number(result);
+        eventsResponse = await provider.getEvents({
+          address: factoryAddress,
+          keys: [[eventKey]],
+          from_block: { block_number: 0 },
+          to_block: "latest",
+          chunk_size: 100,
+        });
       } catch {
-        marketCount = 0;
-      }
-
-      if (marketCount === 0) {
         setMarkets([]);
         setLoading(false);
         return;
       }
 
-      // Fetch MarketCreated events
-      const eventKey = hash.getSelectorFromName("MarketCreated");
-      const eventsResponse = await provider.getEvents({
-        address: factoryAddress,
-        keys: [[eventKey]],
-        from_block: { block_number: 0 },
-        to_block: "latest",
-        chunk_size: 100,
-      });
+      if (!eventsResponse.events.length) {
+        setMarkets([]);
+        setLoading(false);
+        return;
+      }
 
       const parsed: MarketData[] = [];
       for (const event of eventsResponse.events) {
@@ -196,22 +220,56 @@ export function useMarkets() {
         }
       }
 
-      // Fetch live bet counts for each deployed market contract
-      const withCounts = await Promise.all(
+      // Show markets immediately from event data so the list isn't blank
+      setMarkets(parsed);
+      setLoading(false);
+
+      // Then fetch live on-chain data per market (status + counts) in background
+      const withLive = await Promise.all(
         parsed.map(async (market) => {
           if (!market.address) return market;
           try {
             const contract = getMarketContract(market.address);
-            const [totalBets, yesCount, noCount] = await Promise.all([
+            const [totalBets, yesCount, noCount, statusRaw, poolBalRaw] = await Promise.all([
               contract.get_total_bets(),
               contract.get_yes_count(),
               contract.get_no_count(),
+              contract.get_status(),
+              contract.get_pool_balance(),
             ]);
+
+            // Resolve the real on-chain status (Resolved, Cancelled, etc.)
+            // statusRaw is a variant object like { Open: {} } or a felt index
+            let onChainStatus: string | undefined;
+            if (statusRaw !== undefined && statusRaw !== null) {
+              const variantName = statusRaw?.activeVariant?.() ?? Object.keys(statusRaw ?? {})[0];
+              if (variantName && variantName !== "undefined") {
+                onChainStatus = variantName; // "Open", "Revealing", "Resolving", "Resolved", ...
+              } else {
+                // Fallback: statusRaw might be a raw felt string like "0x3"
+                const idx = String(Number(BigInt(String(statusRaw))));
+                onChainStatus = STATUS_MAP[idx];
+              }
+            }
+
+            // Compute effective status: whichever is further in the lifecycle wins.
+            // On-chain status can lag if no tx has run _update_status() since the deadline.
+            const effectiveStatus = getEffectiveStatus(
+              onChainStatus ?? market.status,
+              market.betDeadline,
+              market.revealDeadline,
+            );
+
+            const poolWei = poolBalRaw != null ? BigInt(poolBalRaw) : 0n;
+            const poolStrk = (Number(poolWei) / 1e18).toFixed(4);
+
             return {
               ...market,
               totalBets: Number(totalBets),
               yesCount: Number(yesCount),
               noCount: Number(noCount),
+              status: effectiveStatus,
+              poolBalance: `${poolStrk} STRK`,
             };
           } catch {
             return market;
@@ -219,13 +277,14 @@ export function useMarkets() {
         }),
       );
 
-      setMarkets(withCounts);
+      // Merge live data into the already-visible list
+      setMarkets(withLive);
     } catch (err: any) {
       console.error("Failed to fetch markets:", err);
       setError(err?.message || "Failed to load markets");
       setMarkets([]);
     } finally {
-      setLoading(false);
+      // setLoading(false); // Removed as it's set earlier
     }
   }, []);
 

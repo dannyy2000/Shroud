@@ -35,7 +35,7 @@ export function loadBetsForMarket(marketId: number, marketAddress?: string): Sto
     return all.filter((b) => {
       if (b.marketId !== marketId) return false;
       // Filter by address when known to prevent stale bets from old deployments bleeding in
-      if (marketAddress && b.marketAddress) return b.marketAddress === marketAddress;
+      if (marketAddress && b.marketAddress) return BigInt(b.marketAddress) === BigInt(marketAddress);
       return true;
     });
   } catch {

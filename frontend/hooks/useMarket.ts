@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { formatUnits } from "ethers";
 import type { MarketData } from "~~/components/MarketCard";
 import { useMarkets } from "./useMarkets";
-import { getMarketAddress, getMarketContract, isZeroAddress } from "~~/lib/contracts";
+import { getMarketContract, isZeroAddress } from "~~/lib/contracts";
 
 const STATUS_MAP: Record<string, string> = {
   Open: "Open",
@@ -39,13 +39,8 @@ export function useMarket(id: number) {
     // Then fetch live on-chain data
     const fetchLive = async () => {
       try {
-        // Check if the market contract is separately deployed
-        // (factory MVP sets market_address = 0x0)
-        let address: string;
-        try {
-          address = await getMarketAddress(id);
-        } catch {
-          // Market contract not deployed (factory MVP limitation)
+        const address = base.address;
+        if (!address || isZeroAddress(address)) {
           setContractDeployed(false);
           return;
         }

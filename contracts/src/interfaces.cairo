@@ -59,6 +59,31 @@ pub struct MarketConfig {
     pub min_bets: u32,            // Minimum total bets required (0 = no minimum)
 }
 
+// --- Pragma Oracle Types ---
+
+#[derive(Drop, Copy, Serde, PartialEq)]
+pub enum DataType {
+    Spot: felt252,
+    Future: (felt252, u64),
+    Generic: felt252,
+}
+
+#[derive(Drop, Copy, Serde, PartialEq)]
+pub enum AggregationMode {
+    Median,
+    Mean,
+    Error,
+}
+
+#[derive(Drop, Copy, Serde)]
+pub struct PragmaPricesResponse {
+    pub price: u128,
+    pub decimals: u32,
+    pub last_updated: u64,
+    pub num_sources: u32,
+    pub maybe_expiration: Option<u64>,
+}
+
 #[starknet::interface]
 pub trait IDepositPool<TContractState> {
     /// Deposit a fixed amount into the anonymity pool.
@@ -78,6 +103,19 @@ pub trait IDepositPool<TContractState> {
 
     /// Mark a nullifier as used (callable by authorized market contracts)
     fn use_nullifier(ref self: TContractState, nullifier: felt252);
+
+    /// Mark a nullifier as used AND transfer the tier's STRK to the calling market.
+    /// This is the canonical path for bet funding: deposit pool → market.
+    /// Only callable by authorized market contracts.
+    fn release_to_market(ref self: TContractState, nullifier: felt252, tier: PoolTier);
+
+    /// Authorize a market contract to call use_nullifier / release_to_market.
+    /// Callable by the pool owner OR the registered market factory.
+    fn authorize_market(ref self: TContractState, market: ContractAddress);
+
+    /// Register the MarketFactory address so it can auto-authorize markets it deploys.
+    /// Callable by the pool owner only.
+    fn set_factory(ref self: TContractState, factory: ContractAddress);
 
     /// Get the deposit amount for a pool tier (in wei)
     fn get_tier_amount(self: @TContractState, tier: PoolTier) -> u256;
@@ -124,10 +162,9 @@ pub trait IUltraKeccakZKHonkVerifier<TContractState> {
 #[starknet::interface]
 pub trait IPragmaOracle<TContractState> {
     /// Get the latest price data for a given pair ID.
-    /// Returns (price, decimals, last_updated_timestamp, num_sources).
     fn get_data(
-        self: @TContractState, data_type: felt252, pair_id: felt252,
-    ) -> (u256, u32, u64, u32);
+        self: @TContractState, data_type: DataType, aggregation_mode: AggregationMode,
+    ) -> PragmaPricesResponse;
 }
 
 #[starknet::interface]

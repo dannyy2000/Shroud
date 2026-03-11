@@ -32,6 +32,8 @@ pub mod DepositPool {
     struct Storage {
         owner: ContractAddress,
         strk_token: ContractAddress,
+        // Registered factory — can authorize markets it deploys
+        market_factory: ContractAddress,
         authorized_markets: Map<ContractAddress, bool>,
 
         // Leaves per tier: (tier_id, index) -> commitment
@@ -140,6 +142,19 @@ pub mod DepositPool {
             self.emit(NullifierUsed { nullifier });
         }
 
+        fn release_to_market(ref self: ContractState, nullifier: felt252, tier: PoolTier) {
+            let caller = get_caller_address();
+            assert(self.authorized_markets.read(caller), 'Not authorized');
+            assert(!self.used_nullifiers.read(nullifier), 'Nullifier already used');
+
+            self.used_nullifiers.write(nullifier, true);
+            self.emit(NullifierUsed { nullifier });
+
+            // Transfer the tier amount from this pool to the calling market contract
+            let amount = self._get_tier_amount(tier);
+            self._transfer_out(caller, amount);
+        }
+
         fn get_tier_amount(self: @ContractState, tier: PoolTier) -> u256 {
             self._get_tier_amount(tier)
         }
@@ -147,15 +162,27 @@ pub mod DepositPool {
         fn get_leaf(self: @ContractState, tier: PoolTier, index: u32) -> felt252 {
             self.leaves.read((tier_to_id(tier), index))
         }
-    }
 
-    #[generate_trait]
-    pub impl AdminImpl of AdminTrait {
+        /// Authorize a market to call use_nullifier / release_to_market.
+        /// Callable by the pool owner OR the registered market factory.
         fn authorize_market(ref self: ContractState, market: ContractAddress) {
-            assert(get_caller_address() == self.owner.read(), 'Only owner');
+            let caller = get_caller_address();
+            assert(
+                caller == self.owner.read() || caller == self.market_factory.read(),
+                'Only owner or factory'
+            );
             self.authorized_markets.write(market, true);
         }
+
+        /// Link the MarketFactory so it can call authorize_market after deploying markets.
+        /// Callable by pool owner only.
+        fn set_factory(ref self: ContractState, factory: ContractAddress) {
+            assert(get_caller_address() == self.owner.read(), 'Only owner');
+            self.market_factory.write(factory);
+        }
     }
+
+    // Old non-ABI AdminImpl removed — authorize_market is now in the public ABI above.
 
     #[generate_trait]
     impl InternalImpl of InternalTrait {
@@ -183,6 +210,23 @@ pub mod DepositPool {
 
             let success = Serde::<bool>::deserialize(ref result).unwrap();
             assert(success, 'STRK transfer failed');
+        }
+
+        /// Transfer STRK from this pool to a market contract.
+        fn _transfer_out(ref self: ContractState, to: ContractAddress, amount: u256) {
+            let strk = self.strk_token.read();
+
+            let mut calldata: Array<felt252> = array![];
+            to.serialize(ref calldata);
+            amount.serialize(ref calldata);
+
+            let mut result = starknet::syscalls::call_contract_syscall(
+                strk, selector!("transfer"), calldata.span(),
+            )
+                .unwrap();
+
+            let success = Serde::<bool>::deserialize(ref result).unwrap();
+            assert(success, 'Pool transfer failed');
         }
     }
 
